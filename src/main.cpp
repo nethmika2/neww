@@ -172,6 +172,12 @@ void loop() {
     smoothed_x = -1;
   }
 
+  // Slider playback runs ahead of touch dispatch so a finger-down frame
+  // never fights the animation for the screen.
+  if (currentState == STATE_GRAPH && varPanelOpen && varAnimating && !touched && displayActive()) {
+    tickVarAnimation();
+  }
+
   if (currentState == STATE_HOME) handleHomeTouch(touched, sx, sy);
   else if (currentState == STATE_GRAPH) handleGraphTouch(touched, sx, sy);
   else if (currentState == STATE_SETTINGS) handleSettingsTouch(touched, sx, sy);

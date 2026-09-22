@@ -74,6 +74,96 @@ void drawPoints(int topY) {
   }
 }
 
+// ==========================================
+// VARIABLE SLIDER ANIMATION
+// ==========================================
+// Desmos-style playback: the play button sweeps the active slider between
+// its min and max so curves like y = m*x + c can be watched as m varies.
+// The value ping-pongs (reversing at the end stops) to avoid a jarring
+// wrap jump, and frames are throttled so the ESP32 keeps up with redraws.
+
+// Bottom row of the variable panel: play button, slider track, speed.
+static const int SLIDER_PLAY_X = 15;
+static const int SLIDER_PLAY_Y = 197;
+static const int SLIDER_PLAY_W = 36;
+static const int SLIDER_PLAY_H = 25;
+static const int SLIDER_TRACK_X = 60;
+static const int SLIDER_TRACK_Y = 205;
+static const int SLIDER_TRACK_W = 170;
+static const int SLIDER_TRACK_H = 6;
+static const int SLIDER_SPEED_X = 240;
+static const int SLIDER_SPEED_Y = 197;
+static const int SLIDER_SPEED_W = 55;
+static const int SLIDER_SPEED_H = 25;
+
+// A full min -> max sweep takes ANIM_SWEEP_SEC at 1x; frames are capped.
+static const unsigned long ANIM_FRAME_MS = 90;
+static const float ANIM_SWEEP_SEC = 8.0;
+static const float ANIM_SPEEDS[] = { 0.5f, 1.0f, 2.0f, 4.0f };
+static const char* const ANIM_SPEED_LABELS[] = { "0.5x", "1x", "2x", "4x" };
+static const int NUM_ANIM_SPEEDS = sizeof(ANIM_SPEEDS) / sizeof(ANIM_SPEEDS[0]);
+
+void toggleVarAnimation() {
+  if (activeVarIdx < 0 || activeVarIdx >= NUM_CUSTOM_VARS || !sliders[activeVarIdx].in_use) {
+    showToast("No variable to animate");
+    return;
+  }
+  varAnimating = !varAnimating;
+  if (varAnimating) {
+    // Restart the frame clock and head back into range when starting from
+    // an end stop so the first frame moves visibly.
+    lastAnimTime = millis();
+    if (sliders[activeVarIdx].value >= sliders[activeVarIdx].max_val) animDirection = -1;
+    else if (sliders[activeVarIdx].value <= sliders[activeVarIdx].min_val) animDirection = 1;
+  } else {
+    saveVariables();
+  }
+  drawGraphScreen(true);
+}
+
+void stopVarAnimation() {
+  if (!varAnimating) return;
+  varAnimating = false;
+  saveVariables();
+}
+
+void cycleAnimSpeed() {
+  animSpeedIdx = (animSpeedIdx + 1) % NUM_ANIM_SPEEDS;
+  // Apply the new speed from a clean dt so the knob never jumps.
+  lastAnimTime = millis();
+  drawGraphScreen(true);
+}
+
+void tickVarAnimation() {
+  if (!varAnimating || !varPanelOpen) return;
+  if (activeVarIdx < 0 || activeVarIdx >= NUM_CUSTOM_VARS || !sliders[activeVarIdx].in_use) {
+    // The animated variable went away (equation edited); park the player.
+    stopVarAnimation();
+    drawGraphScreen(true);
+    return;
+  }
+  unsigned long now = millis();
+  if (now - lastAnimTime < ANIM_FRAME_MS) return;
+  float dt = (now - lastAnimTime) / 1000.0f;
+  lastAnimTime = now;
+  // Clamp dt so a slow frame or a wake from sleep can't fling the value.
+  if (dt > 0.5f) dt = 0.5f;
+  CustomVar& s = sliders[activeVarIdx];
+  double range = s.max_val - s.min_val;
+  if (range <= 0) return;
+  s.value += dt * range / ANIM_SWEEP_SEC * ANIM_SPEEDS[animSpeedIdx] * animDirection;
+  if (s.value >= s.max_val) {
+    s.value = s.max_val;
+    animDirection = -1;
+  } else if (s.value <= s.min_val) {
+    s.value = s.min_val;
+    animDirection = 1;
+  }
+  // The viewport/grid is static while animating, so skip the full wipe and
+  // spend the frame budget on the plot plus the panel redraw.
+  drawGraphScreen(false);
+}
+
 void drawGraphScreen(bool fullWipe) {
   int topY = tabsVisible ? 31 : 0;
   if (needsFullWipe && !fullWipe) {
@@ -268,11 +358,22 @@ void drawGraphScreen(bool fullWipe) {
       drawModernButton(235, 165, 30, 25, 4, SURFACE_HI, false);
       printCentered(">", 250, 182, &FreeSansBold9pt7b, TEXT_COLOR);
       printCentered(sliders[activeVarIdx].name + " = " + niceNum(sliders[activeVarIdx].value), 140, 182, &FreeSansBold9pt7b, ACCENT_COLOR);
-      tft.fillRoundRect(40, 205, 240, 6, 3, BG_COLOR);
+      uint16_t playBg = varAnimating ? ACCENT_COLOR : SURFACE_HI;
+      uint16_t playFg = varAnimating ? BG_COLOR : TEXT_COLOR;
+      drawModernButton(SLIDER_PLAY_X, SLIDER_PLAY_Y, SLIDER_PLAY_W, SLIDER_PLAY_H, 4, playBg, false);
+      int playCx = SLIDER_PLAY_X + SLIDER_PLAY_W / 2;
+      int playCy = SLIDER_PLAY_Y + SLIDER_PLAY_H / 2;
+      if (varAnimating) drawPauseIcon(playCx, playCy, playFg);
+      else drawPlayIcon(playCx, playCy, playFg);
+      tft.fillRoundRect(SLIDER_TRACK_X, SLIDER_TRACK_Y, SLIDER_TRACK_W, SLIDER_TRACK_H, 3, BG_COLOR);
       float pct = (sliders[activeVarIdx].value - sliders[activeVarIdx].min_val) / (sliders[activeVarIdx].max_val - sliders[activeVarIdx].min_val);
-      int kx = 40 + (int)(pct * 240);
-      tft.fillCircle(kx, 208, 8, TEXT_COLOR);
-      tft.fillCircle(kx, 208, 4, PLOT_COLOR);
+      pct = constrain(pct, 0.0f, 1.0f);
+      int kx = SLIDER_TRACK_X + (int)(pct * SLIDER_TRACK_W);
+      int ky = SLIDER_TRACK_Y + SLIDER_TRACK_H / 2;
+      tft.fillCircle(kx, ky, 8, TEXT_COLOR);
+      tft.fillCircle(kx, ky, 4, varAnimating ? ACCENT_COLOR : PLOT_COLOR);
+      drawModernButton(SLIDER_SPEED_X, SLIDER_SPEED_Y, SLIDER_SPEED_W, SLIDER_SPEED_H, 4, SURFACE_HI, false);
+      printCentered(ANIM_SPEED_LABELS[animSpeedIdx], SLIDER_SPEED_X + SLIDER_SPEED_W / 2, SLIDER_SPEED_Y + 17, &FreeSansBold9pt7b, TEXT_COLOR);
     } else printCentered("No variables active", 160, 195, &FreeSans9pt7b, MUTED_COLOR);
   } else {
     drawBottomControls();
@@ -353,6 +454,7 @@ void handleGraphTouch(bool touched, int sx, int sy) {
       if (varPanelOpen) {
         if (inRect(sx, sy, 275, 165, 30, 25)) {
           flashButton(275, 165, 30, 25, 4);
+          stopVarAnimation();
           saveVariables();
           varPanelOpen = false;
           drawGraphScreen(true);
@@ -362,15 +464,38 @@ void handleGraphTouch(bool touched, int sx, int sy) {
         if (activeVarIdx >= 0) {
           if (inRect(sx, sy, 20, 165, 30, 25)) {
             flashButton(20, 165, 30, 25, 4);
-            do { activeVarIdx = (activeVarIdx - 1 + NUM_CUSTOM_VARS) % NUM_CUSTOM_VARS; } while (!sliders[activeVarIdx].in_use);
+            stopVarAnimation();
+            // Bounded scan: never hang if every variable went out of use.
+            for (int n = 0; n < NUM_CUSTOM_VARS; n++) {
+              activeVarIdx = (activeVarIdx - 1 + NUM_CUSTOM_VARS) % NUM_CUSTOM_VARS;
+              if (sliders[activeVarIdx].in_use) break;
+            }
             drawGraphScreen(true);
             touchActive = false;
             return;
           }
           if (inRect(sx, sy, 235, 165, 30, 25)) {
             flashButton(235, 165, 30, 25, 4);
-            do { activeVarIdx = (activeVarIdx + 1) % NUM_CUSTOM_VARS; } while (!sliders[activeVarIdx].in_use);
+            stopVarAnimation();
+            for (int n = 0; n < NUM_CUSTOM_VARS; n++) {
+              activeVarIdx = (activeVarIdx + 1) % NUM_CUSTOM_VARS;
+              if (sliders[activeVarIdx].in_use) break;
+            }
             drawGraphScreen(true);
+            touchActive = false;
+            return;
+          }
+          if (inRect(sx, sy, SLIDER_PLAY_X, SLIDER_PLAY_Y, SLIDER_PLAY_W, SLIDER_PLAY_H)) {
+            flashButton(SLIDER_PLAY_X, SLIDER_PLAY_Y, SLIDER_PLAY_W, SLIDER_PLAY_H, 4);
+            toggleVarAnimation();
+            while (ts.touched()) delay(10);
+            touchActive = false;
+            return;
+          }
+          if (inRect(sx, sy, SLIDER_SPEED_X, SLIDER_SPEED_Y, SLIDER_SPEED_W, SLIDER_SPEED_H)) {
+            flashButton(SLIDER_SPEED_X, SLIDER_SPEED_Y, SLIDER_SPEED_W, SLIDER_SPEED_H, 4);
+            cycleAnimSpeed();
+            while (ts.touched()) delay(10);
             touchActive = false;
             return;
           }
@@ -469,8 +594,10 @@ void handleGraphTouch(bool touched, int sx, int sy) {
         }
       }
     } else {
-      if (varPanelOpen && sy > 195 && sy < 225 && sx > 30 && sx < 290) {
-        float pct = constrain((float)(sx - 40) / 240.0, 0.0, 1.0);
+      if (varPanelOpen && activeVarIdx >= 0 && activeVarIdx < NUM_CUSTOM_VARS && sy > 195 && sy < 225 && sx > 50 && sx < 240) {
+        // A manual drag wins over playback so the knob never fights the finger.
+        stopVarAnimation();
+        float pct = constrain((float)(sx - SLIDER_TRACK_X) / SLIDER_TRACK_W, 0.0, 1.0);
         sliders[activeVarIdx].value = sliders[activeVarIdx].min_val + (pct * (sliders[activeVarIdx].max_val - sliders[activeVarIdx].min_val));
         if (millis() - lastPanTime > 40) {
           needsFullWipe = true;

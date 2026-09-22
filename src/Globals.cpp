@@ -94,6 +94,13 @@ unsigned long lastPanTime = 0;
 bool varPanelOpen = false;
 int activeVarIdx = -1;
 
+// Slider playback state.  animDirection flips at the min/max stops so the
+// value ping-pongs instead of wrapping with a visible jump.
+bool varAnimating = false;
+int animDirection = 1;
+unsigned long lastAnimTime = 0;
+int animSpeedIdx = 1;
+
 // ==========================================
 // KEYBOARD MATRIX LAYOUTS
 // ==========================================
