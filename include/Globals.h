@@ -86,6 +86,11 @@ extern float smoothed_x, smoothed_y;
 extern unsigned long lastPanTime;
 extern bool varPanelOpen;
 extern int activeVarIdx;
+// Slider playback (Desmos-style variable animation)
+extern bool varAnimating;
+extern int animDirection;
+extern unsigned long lastAnimTime;
+extern int animSpeedIdx;
 
 // ==========================================
 // KEYBOARD MATRIX LAYOUTS
