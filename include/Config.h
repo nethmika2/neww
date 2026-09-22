@@ -4,8 +4,11 @@
 // ==========================================
 // 1. HARDWARE PINS & LIMITS
 // ==========================================
-#define NUM_FUNCS 4
-#define MAX_TRACKS 20
+// The CYD has enough heap for a larger expression list while keeping the
+// renderer small enough to stay responsive.  Empty slots cost almost no
+// flash/storage and make the graph editor feel much closer to Desmos.
+#define NUM_FUNCS 6
+#define MAX_TRACKS 100
 #define MAX_POINTS 10
 #define NUM_CUSTOM_VARS 8
 
@@ -69,6 +72,8 @@ static const char* const NTP_3 = "pool.ntp.org";
 #define F2_COLOR 0xFCE8
 #define F3_COLOR 0xA37A
 #define F4_COLOR 0x3E34
+#define F5_COLOR 0x07FF
+#define F6_COLOR 0xF81F
 
 #define RADIUS_SM 6
 #define RADIUS_MD 10
@@ -84,7 +89,9 @@ static const char* const NTP_3 = "pool.ntp.org";
 
 #define SCREEN_TIMEOUT_MS 60000UL
 #define SAVER_OFF_MS 600000UL
-#define TRACKS_PER_PAGE 5
+// Six compact rows fit comfortably above the music list pager.
+#define TRACKS_PER_PAGE 6
+#define TRACK_ROW_HEIGHT 27
 
 static const int WORK_TIME = 25 * 60;
 static const int SHORT_BREAK_TIME = 5 * 60;

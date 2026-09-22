@@ -30,3 +30,18 @@ void loadPoints() {
     points[i].y = prefs.getDouble(("py" + String(i)).c_str(), 0);
   }
 }
+
+void saveVariables() {
+  for (int i = 0; i < NUM_CUSTOM_VARS; i++) {
+    prefs.putDouble(("v" + String(i)).c_str(), sliders[i].value);
+  }
+}
+
+void loadVariables() {
+  for (int i = 0; i < NUM_CUSTOM_VARS; i++) {
+    sliders[i].value = constrain(
+      prefs.getDouble(("v" + String(i)).c_str(), sliders[i].value),
+      sliders[i].min_val,
+      sliders[i].max_val);
+  }
+}

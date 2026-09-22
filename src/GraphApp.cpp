@@ -164,17 +164,20 @@ void drawGraphScreen(bool fullWipe) {
         }
         prevSY = sy;
         prevValid = (sy != -1000);
+        if ((sx & 63) == 0) yield();
       }
     } else if (funcs[i].type == EQ_PARAMETRIC && funcs[i].exprY) {
       int prev_sx = -1000, prev_sy = -1000;
+      int sample = 0;
       for (math_t = -PI * 2; math_t <= PI * 2; math_t += 0.02) {
         double px = te_eval(funcs[i].exprX);
         double py = te_eval(funcs[i].exprY);
-        if (isnan(px) || isnan(py)) continue;
+        if (isnan(px) || isnan(py) || isinf(px) || isinf(py)) continue;
         int sx = worldXToScreen(px), sy = worldYToScreen(py);
         if (prev_sx != -1000 && prev_sy != -1000) tft.drawLine(prev_sx, prev_sy, sx, sy, funcs[i].color);
         prev_sx = sx;
         prev_sy = sy;
+        if ((sample++ & 63) == 0) yield();
       }
     } else if (funcs[i].type == EQ_POINT && funcs[i].exprY) {
       double px = te_eval(funcs[i].exprX);
@@ -190,13 +193,15 @@ void drawGraphScreen(bool fullWipe) {
       double prev_row[110];
       double curr_row[110];
 
+      // Implicit plots use writePixel heavily, so keep one SPI transaction
+      // for the marching-squares pass.
+      tft.startWrite();
       math_y = screenYToWorld(topY);
       for (int c = 0; c < cols; c++) {
         math_x = screenXToWorld(c * step);
         prev_row[c] = te_eval(funcs[i].exprX);
       }
 
-      tft.startWrite();
       for (int sy = topY + step; sy <= 240; sy += step) {
         math_y = screenYToWorld(sy);
 
@@ -231,13 +236,13 @@ void drawGraphScreen(bool fullWipe) {
     if (funcs[i].visible && funcs[i].exprX) drawHoles(i, topY);
   drawPoints(topY);
 
-  if (traceActive && traceSlot >= 0 && funcs[traceSlot].exprX) {
+  if (traceActive && traceSlot >= 0 && traceSlot < NUM_FUNCS && funcs[traceSlot].exprX) {
     int tsx = worldXToScreen(traceWorldX), tsy = worldYToScreen(traceWorldY);
-    if (tsy >= topY + 5 && tsy <= 235) {
+    if (!isnan(traceWorldY) && !isinf(traceWorldY) && tsy >= topY + 5 && tsy <= 235) {
       tft.fillCircle(tsx, tsy, 5, TEXT_COLOR);
       tft.fillCircle(tsx, tsy, 3, funcs[traceSlot].color);
-      String label = "x:" + String(traceWorldX, 2) + " y:" + String(traceWorldY, 2);
-      int boxW = 12 + label.length() * 6;
+      String label = "x:" + niceNum(traceWorldX) + " y:" + niceNum(traceWorldY);
+      int boxW = constrain(12 + label.length() * 6, 70, 310);
       old_boxW = boxW;
       tft.fillRoundRect(5, topY + 5, boxW, 18, RADIUS_SM, BTN_COLOR);
       tft.drawRoundRect(5, topY + 5, boxW, 18, RADIUS_SM, funcs[traceSlot].color);
@@ -289,21 +294,29 @@ void drawTopBar() {
 }
 
 void drawFunctionTabs() {
+  // Six narrow expression tabs fit between the back and collapse buttons.
+  // Like Desmos, the colored dot is the visibility switch and the rest of
+  // the row opens that expression for editing.
+  const int tabW = 240 / NUM_FUNCS;
   for (int i = 0; i < NUM_FUNCS; i++) {
-    int x = 40 + (i * 60);
+    int x = 40 + (i * tabW);
     uint16_t tabBg = funcs[i].visible ? SURFACE_HI : BG_COLOR;
-    tft.fillRect(x, 0, 60, 30, tabBg);
+    tft.fillRect(x, 0, tabW, 30, tabBg);
     tft.drawFastVLine(x, 0, 30, BTN_OUTLINE);
-    if (funcs[i].visible) tft.fillCircle(x + 8, 15, 4, funcs[i].color);
-    else tft.drawCircle(x + 8, 15, 4, MUTED_COLOR);
+    if (i == activeSlot) tft.drawRect(x + 1, 1, tabW - 2, 28, funcs[i].color);
+    if (funcs[i].visible) tft.fillCircle(x + 7, 15, 4, funcs[i].color);
+    else tft.drawCircle(x + 7, 15, 4, MUTED_COLOR);
     if (funcs[i].input.length() > 0 && funcs[i].exprX == nullptr) {
       tft.setTextColor(DEL_COLOR);
       tft.setTextSize(1);
-      tft.setCursor(x + 50, 2);
+      tft.setCursor(x + tabW - 8, 2);
       tft.print("!");
     }
-    String truncEq = funcs[i].input.length() <= 5 ? funcs[i].input : funcs[i].input.substring(0, 4) + ".";
-    printPrettyEquation(x + 14, 11, funcs[i].input.length() == 0 ? "tap" : truncEq, -1, funcs[i].visible ? TEXT_COLOR : MUTED_COLOR, 1);
+    int maxChars = max(2, (tabW - 14) / 6);
+    String truncEq = funcs[i].input;
+    if (truncEq.length() > maxChars) truncEq = truncEq.substring(0, maxChars - 1) + ".";
+    if (truncEq.length() == 0) truncEq = "+";
+    printPrettyEquation(x + 13, 11, truncEq, -1, funcs[i].visible ? TEXT_COLOR : MUTED_COLOR, 1);
   }
 }
 
@@ -340,6 +353,7 @@ void handleGraphTouch(bool touched, int sx, int sy) {
       if (varPanelOpen) {
         if (inRect(sx, sy, 275, 165, 30, 25)) {
           flashButton(275, 165, 30, 25, 4);
+          saveVariables();
           varPanelOpen = false;
           drawGraphScreen(true);
           touchActive = false;
@@ -377,12 +391,13 @@ void handleGraphTouch(bool touched, int sx, int sy) {
         delay(250);
         touchActive = false;
         return;
-      } else if (tabsVisible && sy < 30 && sx > 40 && sx < 240) {
+      } else if (tabsVisible && sy < 30 && sx >= 40 && sx < 280) {
         handleTabTouch(sx, sy);
         touchActive = false;
         delay(200);
         return;
       } else if (inRect(sx, sy, 10, 195, 50, 40)) {
+        // Reset the viewport without disturbing the expression list.
         flashButton(10, 195, 50, 40, RADIUS_MD);
         centerWorldX = 0;
         centerWorldY = 0;
@@ -496,9 +511,10 @@ void handleGraphTouch(bool touched, int sx, int sy) {
 }
 
 void handleTabTouch(int sx, int sy) {
-  int idx = (sx - 40) / 60;
+  const int tabW = 240 / NUM_FUNCS;
+  int idx = (sx - 40) / tabW;
   if (idx < 0 || idx >= NUM_FUNCS) return;
-  if (sx - 40 - (idx * 60) < 15 && sy < 20) {
+  if (sx - 40 - (idx * tabW) < 13 && sy < 22) {
     funcs[idx].visible = !funcs[idx].visible;
     saveFunctions();
     drawGraphScreen(true);
@@ -517,9 +533,9 @@ void holdZoom(double factor, int rx, int ry, int rw, int rh) {
     int hw_x = touch_swap_xy ? p.y : p.x, hw_y = touch_swap_xy ? p.x : p.y;
     int px = constrain(map(hw_x, touch_x_min, touch_x_max, 0, 320), 0, 320), py = constrain(map(hw_y, touch_y_min, touch_y_max, 0, 240), 0, 240);
     if (!inRect(px, py, rx, ry, rw, rh)) break;
-    zoom *= factor;
-    if (zoom < 0.5) zoom = 0.5;
-    if (zoom > 4000) zoom = 4000;
+    // Zoom around the centre of the plot, not the +/- button itself.
+    // zoomAt preserves the world coordinate under that centre.
+    zoomAt(factor, 160, 120);
     traceActive = false;
     needsFullWipe = true;
     drawGraphScreen(false);

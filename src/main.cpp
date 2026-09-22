@@ -37,6 +37,7 @@ void setup() {
   autoSyncBoot = prefs.getBool("autosync", true);
   xAxisPi = prefs.getBool("xpi", false);
   yAxisPi = prefs.getBool("ypi", false);
+  currentVolume = prefs.getInt("volume", 80);
   applyVolume();
 
   SPI.begin(SD_CLK, SD_MISO, SD_MOSI, SD_CS);
@@ -48,7 +49,9 @@ void setup() {
     for (int j = 0; j <= 320; j++) prev_y[i][j] = -1000;
   loadFunctions();
   loadPoints();
+  loadVariables();
   for (int i = 0; i < NUM_FUNCS; i++) compileSlot(i);
+  refreshActiveVariables();
   cursor_idx = funcs[0].input.length();
 
   lastActivityTime = millis();
