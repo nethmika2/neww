@@ -57,8 +57,9 @@ void handleKeyboardTouch(bool touched, int sx, int sy) {
   flashButton(kx, ky, 49, 36, RADIUS_SM);
 
   if (key == "PLOT") {
-    for (int i = 0; i < NUM_CUSTOM_VARS; i++) sliders[i].in_use = false;
     compileSlot(activeSlot);
+    funcs[activeSlot].visible = funcs[activeSlot].input.length() > 0;
+    refreshActiveVariables();
     saveFunctions();
     currentState = STATE_GRAPH;
     tft.fillScreen(BG_COLOR);
@@ -164,7 +165,15 @@ void updateInputBox() {
   tft.setTextColor(MUTED_COLOR);
   tft.setTextSize(2);
   tft.print("E" + String(activeSlot + 1) + ":");
-  printPrettyEquation(50, 12, funcs[activeSlot].input, cursor_idx, TEXT_COLOR, 2);
+
+  // Keep the caret visible for long equations instead of drawing text past
+  // the right edge of the 320 px display.
+  const int maxChars = 21;
+  int start = max(0, cursor_idx - (maxChars - 3));
+  if (start > (int)funcs[activeSlot].input.length()) start = funcs[activeSlot].input.length();
+  String shown = funcs[activeSlot].input.substring(start, start + maxChars);
+  int shownCursor = constrain(cursor_idx - start, 0, (int)shown.length());
+  printPrettyEquation(50, 12, shown, shownCursor, TEXT_COLOR, 2);
 }
 
 void drawPointKeyboardScreen() {
@@ -182,10 +191,16 @@ void updatePointInputBox() {
   tft.setTextColor(MUTED_COLOR);
   tft.setCursor(8, 12);
   tft.print("(");
-  printPrettyEquation(22, 12, pointInput, pointCursor, TEXT_COLOR, 2);
+  const int maxChars = 17;
+  int start = max(0, pointCursor - (maxChars - 3));
+  if (start > (int)pointInput.length()) start = pointInput.length();
+  String shown = pointInput.substring(start, start + maxChars);
+  int shownCursor = constrain(pointCursor - start, 0, (int)shown.length());
+  printPrettyEquation(22, 12, shown, shownCursor, TEXT_COLOR, 2);
   tft.setTextSize(2);
   tft.setTextColor(MUTED_COLOR);
-  tft.setCursor(22 + pointInput.length() * 12 + 4, 12);
+  int closeX = min(22 + (int)shown.length() * 12 + 4, 224);
+  tft.setCursor(closeX, 12);
   tft.print(")");
   tft.setTextSize(1);
   tft.setTextColor(MUTED_COLOR);

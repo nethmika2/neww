@@ -23,9 +23,32 @@ String niceNum(double v) {
 }
 
 void flagActiveVariables(String eq) {
+  // Only match a variable as a token.  A plain indexOf() marks the `a` in
+  // tan() and the `c` in cos() as sliders, which makes the variable panel
+  // noisy and is very unlike a graphing calculator.
   for (int v = 0; v < NUM_CUSTOM_VARS; v++) {
-    if (eq.indexOf(sliders[v].name) >= 0) sliders[v].in_use = true;
+    const String& name = sliders[v].name;
+    for (int at = eq.indexOf(name); at >= 0; at = eq.indexOf(name, at + name.length())) {
+      bool leftIsWord = at > 0 && (isAlphaChar(eq[at - 1]) || isDigitChar(eq[at - 1]) || eq[at - 1] == '_');
+      int after = at + name.length();
+      bool rightIsWord = after < (int)eq.length() && (isAlphaChar(eq[after]) || isDigitChar(eq[after]) || eq[after] == '_');
+      if (!leftIsWord && !rightIsWord) {
+        sliders[v].in_use = true;
+        break;
+      }
+    }
   }
+}
+
+void refreshActiveVariables() {
+  for (int v = 0; v < NUM_CUSTOM_VARS; v++) sliders[v].in_use = false;
+  for (int i = 0; i < NUM_FUNCS; i++) {
+    if (funcs[i].input.length()) flagActiveVariables(funcs[i].input);
+  }
+}
+
+static bool isFunctionMarker(char c) {
+  return c >= '\x01' && c <= '\x0C';
 }
 
 String fixEquation(String eq) {
@@ -59,10 +82,12 @@ String fixEquation(String eq) {
     if (i + 1 < res.length()) {
       char c2 = res[i + 1];
       bool addStar = false;
-      // Note: \x0C is the highest temporary character used above.
-      if (isDigitChar(c1) && (isVarChar(c2) || c2 == '(' || c2 <= '\x0C')) addStar = true;
-      if (isVarChar(c1) && (isDigitChar(c2) || isVarChar(c2) || c2 == '(' || c2 <= '\x0C')) addStar = true;
-      if (c1 == ')' && (isDigitChar(c2) || isVarChar(c2) || c2 == '(' || c2 <= '\x0C')) addStar = true;
+      // Note: the control characters are temporary function markers.  A
+      // marker followed by '(' is a call (sin(x), sqrt(x)), not a product.
+      if (isDigitChar(c1) && (isVarChar(c2) || c2 == '(' || isFunctionMarker(c2))) addStar = true;
+      if (isVarChar(c1) && (isDigitChar(c2) || isVarChar(c2) || c2 == '(' || isFunctionMarker(c2))) addStar = true;
+      if (isFunctionMarker(c1) && c2 != '(' && (isDigitChar(c2) || isVarChar(c2) || isFunctionMarker(c2))) addStar = true;
+      if (c1 == ')' && (isDigitChar(c2) || isVarChar(c2) || c2 == '(' || isFunctionMarker(c2))) addStar = true;
       if (addStar) final_res += '*';
     }
   }
@@ -108,6 +133,12 @@ void compileSlot(int i) {
     funcs[i].exprX = te_compile(inner.substring(0, comma).c_str(), vars, NUM_TE_VARS, &err);
     funcs[i].exprY = te_compile(inner.substring(comma + 1).c_str(), vars, NUM_TE_VARS, &err);
     funcs[i].type = (fixed.indexOf('t') >= 0) ? EQ_PARAMETRIC : EQ_POINT;
+    if (!funcs[i].exprX || !funcs[i].exprY) {
+      te_free(funcs[i].exprX);
+      te_free(funcs[i].exprY);
+      funcs[i].exprX = nullptr;
+      funcs[i].exprY = nullptr;
+    }
     flagActiveVariables(fixed);
     return;
   }
@@ -165,6 +196,18 @@ double screenXToWorld(int sx) {
 
 double screenYToWorld(int sy) {
   return centerWorldY - (sy - 120) / zoom;
+}
+
+void zoomAt(double factor, int sx, int sy) {
+  factor = constrain(factor, 0.01, 100.0);
+  double keepX = screenXToWorld(sx);
+  double keepY = screenYToWorld(sy);
+  zoom = constrain(zoom * factor, 0.5, 4000.0);
+  // Preserve the world coordinate under the cursor.  This small detail makes
+  // the +/- controls feel like a real graphing calculator instead of simply
+  // stretching the graph around an unrelated origin.
+  centerWorldX = keepX - (sx - 160) / zoom;
+  centerWorldY = keepY + (sy - 120) / zoom;
 }
 
 double getNiceStep(double range) {

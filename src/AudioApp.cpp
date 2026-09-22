@@ -121,7 +121,8 @@ WavInfo parseWavHeader(File& f) {
 
 void loadPlaylist() {
   numTracks = 0;
-  if (!sdReady || xSemaphoreTake(audioMutex, portMAX_DELAY) != pdTRUE) return;
+  if (!sdReady || !audioMutex || xSemaphoreTake(audioMutex, portMAX_DELAY) != pdTRUE) return;
+
   File root = SD.open("/");
   if (root) {
     while (numTracks < MAX_TRACKS) {
@@ -133,14 +134,19 @@ void loadPlaylist() {
         nameLower.toLowerCase();
         if (nameLower.endsWith(".wav")) {
           if (name.startsWith("/")) name = name.substring(1);
-          playlist[numTracks] = name;
-          numTracks++;
+          playlist[numTracks++] = name;
         }
       }
       entry.close();
     }
     root.close();
   }
+
+  // A card can be changed while the player is open.  Keep the selected index
+  // valid after a refresh so the larger playlist cannot cause an out-of-range
+  // title lookup on the player screen.
+  if (numTracks == 0) currentTrack = 0;
+  else currentTrack = constrain(currentTrack, 0, numTracks - 1);
   xSemaphoreGive(audioMutex);
 }
 
@@ -309,6 +315,7 @@ void handleMusicTouch(bool touched, int sx, int sy) {
     flashButton(10, 180, 50, 45, RADIUS_MD);
     currentVolume -= 10;
     applyVolume();
+    prefs.putInt("volume", currentVolume);
     drawMusicScreen(true);
     lastMusicBtnPress = millis();
   } else if (inRect(sx, sy, 70, 180, 50, 45)) {
@@ -336,6 +343,7 @@ void handleMusicTouch(bool touched, int sx, int sy) {
     flashButton(260, 180, 50, 45, RADIUS_MD);
     currentVolume += 10;
     applyVolume();
+    prefs.putInt("volume", currentVolume);
     drawMusicScreen(true);
     lastMusicBtnPress = millis();
   }
@@ -354,10 +362,10 @@ void drawMusicList() {
   for (int i = 0; i < TRACKS_PER_PAGE; i++) {
     int idx = listPage * TRACKS_PER_PAGE + i;
     if (idx >= numTracks) break;
-    int y = 36 + i * 32;
+    int y = 34 + i * TRACK_ROW_HEIGHT;
     bool cur = (idx == currentTrack);
-    tft.fillRoundRect(8, y, 304, 29, RADIUS_SM, cur ? SURFACE_HI : SURFACE_COLOR);
-    tft.drawRoundRect(8, y, 304, 29, RADIUS_SM, cur ? PLOT_COLOR : BTN_OUTLINE);
+    tft.fillRoundRect(8, y, 304, TRACK_ROW_HEIGHT - 2, RADIUS_SM, cur ? SURFACE_HI : SURFACE_COLOR);
+    tft.drawRoundRect(8, y, 304, TRACK_ROW_HEIGHT - 2, RADIUS_SM, cur ? PLOT_COLOR : BTN_OUTLINE);
     if (cur) {
       if (isPlaying) drawPauseIcon(24, y + 14, PLOT_COLOR);
       else drawPlayIcon(24, y + 14, PLOT_COLOR);
@@ -409,9 +417,9 @@ void handleMusicListTouch(bool touched, int sx, int sy) {
   for (int i = 0; i < TRACKS_PER_PAGE; i++) {
     int idx = listPage * TRACKS_PER_PAGE + i;
     if (idx >= numTracks) break;
-    int y = 36 + i * 32;
-    if (inRect(sx, sy, 8, y, 304, 29)) {
-      flashButton(8, y, 304, 29, RADIUS_SM);
+    int y = 34 + i * TRACK_ROW_HEIGHT;
+    if (inRect(sx, sy, 8, y, 304, TRACK_ROW_HEIGHT - 2)) {
+      flashButton(8, y, 304, TRACK_ROW_HEIGHT - 2, RADIUS_SM);
       if (idx == currentTrack && audioFile && currentWav.valid) {
         isPlaying = !isPlaying;
         drawMusicList();

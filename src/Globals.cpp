@@ -71,7 +71,9 @@ FuncSlot funcs[NUM_FUNCS] = {
   { "y=x^2", EQ_EXPLICIT, nullptr, nullptr, true, F1_COLOR },
   { "x^2+y^2=25", EQ_IMPLICIT, nullptr, nullptr, false, F2_COLOR },
   { "y=m*x+c", EQ_EXPLICIT, nullptr, nullptr, false, F3_COLOR },
-  { "(t, t^2)", EQ_PARAMETRIC, nullptr, nullptr, false, F4_COLOR }
+  { "(t, t^2)", EQ_PARAMETRIC, nullptr, nullptr, false, F4_COLOR },
+  { "", EQ_EMPTY, nullptr, nullptr, false, F5_COLOR },
+  { "", EQ_EMPTY, nullptr, nullptr, false, F6_COLOR }
 };
 
 PlotPoint points[MAX_POINTS];
