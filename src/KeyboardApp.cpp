@@ -1,0 +1,270 @@
+#include "KeyboardApp.h"
+#include "Globals.h"
+#include "DisplayUtils.h"
+#include "MathEngine.h"
+#include "Storage.h"
+#include "TouchDriver.h"
+
+// Forward declaration from GraphApp
+void drawGraphScreen(bool fullWipe);
+
+void drawSingleKey(int r, int c, const char* keys[5][6]) {
+  int x = (c * 53) + 2, y = (40 + (r * 40)) + 2;
+  String keyStr = String(keys[r][c]);
+  if (keyStr == " ") return;
+  uint16_t btn_bg = SURFACE_COLOR;
+  if (keyStr == "PLOT" || keyStr == "ADD") btn_bg = PLOT_COLOR;
+  else if (keyStr == "DEL" || keyStr == "AC") btn_bg = DEL_COLOR;
+  else if (keyStr == "FUNC" || keyStr == "BACK" || keyStr == "UNDO" || keyStr == "CLR" || keyStr == "VAR") btn_bg = FUNC_COLOR;
+  drawModernButton(x, y, 49, 36, RADIUS_SM, btn_bg, false);
+  uint16_t txtColor = isVarChar(keyStr[0]) && keyStr.length() == 1 ? VAR_COLOR : TEXT_COLOR;
+  tft.setTextColor(txtColor);
+  if (keyStr == "sqrt()") {
+    int gx = x + 4, gy = y + 10;
+    int w = drawRadical(gx, gy, 2, txtColor);
+    tft.setTextSize(2);
+    tft.setCursor(gx + w, gy);
+    tft.print("()");
+    tft.drawFastHLine(gx + w - 1, gy, 26, txtColor);
+    tft.drawFastHLine(gx + w - 1, gy + 1, 26, txtColor);
+    return;
+  }
+  if (keyStr.length() >= 4) {
+    tft.setTextSize(1);
+    tft.setCursor(x + 5, y + 14);
+  } else {
+    tft.setTextSize(2);
+    tft.setCursor(x + 10, y + 11);
+  }
+  tft.print(keyStr);
+}
+
+void drawKeyboardScreen(const char* keys[5][6]) {
+  updateInputBox();
+  for (int r = 0; r < 5; r++)
+    for (int c = 0; c < 6; c++) drawSingleKey(r, c, keys);
+}
+
+void handleKeyboardTouch(bool touched, int sx, int sy) {
+  if (!touched || sy <= 40) return;
+  int col = sx / 53, row = (sy - 40) / 40;
+  if (col < 0 || col >= 6 || row < 0 || row >= 5) return;
+  const char*(*activeKeys)[6] = (currentState == STATE_MAIN_KBD) ? main_keys : ((currentState == STATE_FUNC_KBD) ? func_keys : var_keys);
+  String key = String(activeKeys[row][col]);
+  if (key == " ") return;
+  String& eq = funcs[activeSlot].input;
+  int kx = (col * 53) + 2, ky = (40 + (row * 40)) + 2;
+  flashButton(kx, ky, 49, 36, RADIUS_SM);
+
+  if (key == "PLOT") {
+    for (int i = 0; i < NUM_CUSTOM_VARS; i++) sliders[i].in_use = false;
+    compileSlot(activeSlot);
+    saveFunctions();
+    currentState = STATE_GRAPH;
+    tft.fillScreen(BG_COLOR);
+    drawGraphScreen(true);
+  } else if (key == "FUNC") {
+    currentState = STATE_FUNC_KBD;
+    tft.fillScreen(BG_COLOR);
+    drawKeyboardScreen(func_keys);
+  } else if (key == "VAR") {
+    currentState = STATE_VAR_KBD;
+    tft.fillScreen(BG_COLOR);
+    drawKeyboardScreen(var_keys);
+  } else if (key == "BACK") {
+    currentState = STATE_MAIN_KBD;
+    tft.fillScreen(BG_COLOR);
+    drawKeyboardScreen(main_keys);
+  } else if (key == "AC") {
+    eq = "";
+    cursor_idx = 0;
+    updateInputBox();
+    drawSingleKey(row, col, activeKeys);
+  } else if (key == "DEL") {
+    if (cursor_idx >= 4 && eq.substring(cursor_idx - 4, cursor_idx) == "sqrt") {
+      eq.remove(cursor_idx - 4, 4);
+      cursor_idx -= 4;
+    } else if (cursor_idx > 0) {
+      eq.remove(cursor_idx - 1, 1);
+      cursor_idx--;
+    }
+    updateInputBox();
+    drawSingleKey(row, col, activeKeys);
+  } else if (key == "<-") {
+    if (cursor_idx >= 4 && eq.substring(cursor_idx - 4, cursor_idx) == "sqrt") cursor_idx -= 4;
+    else if (cursor_idx > 0) cursor_idx--;
+    updateInputBox();
+    drawSingleKey(row, col, activeKeys);
+  } else if (key == "->") {
+    if (eq.startsWith("sqrt", cursor_idx)) cursor_idx += 4;
+    else if (cursor_idx < (int)eq.length()) cursor_idx++;
+    updateInputBox();
+    drawSingleKey(row, col, activeKeys);
+  } else if (key == "x^2" || key == "^2") {
+    eq = eq.substring(0, cursor_idx) + "^2" + eq.substring(cursor_idx);
+    cursor_idx += 2;
+    updateInputBox();
+    drawSingleKey(row, col, activeKeys);
+  } else if (key.endsWith("()")) {
+    eq = eq.substring(0, cursor_idx) + key + eq.substring(cursor_idx);
+    cursor_idx += (key.length() - 1);
+    currentState = STATE_MAIN_KBD;
+    tft.fillScreen(BG_COLOR);
+    drawKeyboardScreen(main_keys);
+  } else {
+    eq = eq.substring(0, cursor_idx) + key + eq.substring(cursor_idx);
+    cursor_idx += key.length();
+    updateInputBox();
+    drawSingleKey(row, col, activeKeys);
+  }
+  waitTouchRelease();
+}
+
+void printPrettyEquation(int start_x, int start_y, String eq, int cursor_pos, uint16_t color, int base_size) {
+  int cur_x = start_x;
+  bool in_power = false;
+  int curTop = start_y - (base_size == 2 ? 2 : 0), curBot = start_y + (base_size == 2 ? 12 : 6);
+  for (int i = 0; i <= (int)eq.length(); i++) {
+    if (i == cursor_pos) {
+      tft.drawLine(cur_x, curTop, cur_x, curBot, VAR_COLOR);
+      cur_x += 2;
+    }
+    if (i == (int)eq.length()) break;
+    char c = eq[i];
+    if (c == '^') {
+      in_power = true;
+      continue;
+    }
+    if (in_power && (c == '+' || c == '-' || c == '*' || c == '/' || c == ')' || c == '=' || c == ',')) in_power = false;
+    tft.setTextColor(color);
+    int sz = in_power ? 1 : base_size;
+    int cy = in_power ? start_y - (base_size == 2 ? 4 : 2) : start_y;
+    if (eq.startsWith("sqrt", i)) {
+      cur_x += drawRadical(cur_x, cy, sz, color);
+      if (cursor_pos > i && cursor_pos < i + 4) {
+        tft.drawLine(cur_x, curTop, cur_x, curBot, VAR_COLOR);
+        cur_x += 2;
+      }
+      i += 3;
+      continue;
+    }
+    tft.setTextSize(sz);
+    tft.setCursor(cur_x, cy);
+    tft.print(c);
+    cur_x += (sz == 2 ? 12 : 6);
+  }
+}
+
+void updateInputBox() {
+  uint16_t borderColor = funcs[activeSlot].color;
+  tft.fillRect(0, 0, 320, 40, BG_COLOR);
+  tft.fillRect(0, 0, 320, 3, borderColor);
+  tft.drawFastHLine(0, 39, 320, BTN_OUTLINE);
+  tft.setCursor(10, 12);
+  tft.setTextColor(MUTED_COLOR);
+  tft.setTextSize(2);
+  tft.print("E" + String(activeSlot + 1) + ":");
+  printPrettyEquation(50, 12, funcs[activeSlot].input, cursor_idx, TEXT_COLOR, 2);
+}
+
+void drawPointKeyboardScreen() {
+  tft.fillScreen(BG_COLOR);
+  updatePointInputBox();
+  for (int r = 0; r < 5; r++)
+    for (int c = 0; c < 6; c++) drawSingleKey(r, c, point_keys);
+}
+
+void updatePointInputBox() {
+  tft.fillRect(0, 0, 320, 40, BG_COLOR);
+  tft.fillRect(0, 0, 320, 3, POINT_COLOR);
+  tft.drawFastHLine(0, 39, 320, BTN_OUTLINE);
+  tft.setTextSize(2);
+  tft.setTextColor(MUTED_COLOR);
+  tft.setCursor(8, 12);
+  tft.print("(");
+  printPrettyEquation(22, 12, pointInput, pointCursor, TEXT_COLOR, 2);
+  tft.setTextSize(2);
+  tft.setTextColor(MUTED_COLOR);
+  tft.setCursor(22 + pointInput.length() * 12 + 4, 12);
+  tft.print(")");
+  tft.setTextSize(1);
+  tft.setTextColor(MUTED_COLOR);
+  tft.setCursor(236, 6);
+  tft.print("Point  x , y");
+  tft.setCursor(236, 22);
+  tft.print(String(numPoints) + " / " + String(MAX_POINTS) + " saved");
+}
+
+void handlePointKeyboardTouch(bool touched, int sx, int sy) {
+  if (!touched || sy <= 40) return;
+  int col = sx / 53, row = (sy - 40) / 40;
+  if (col < 0 || col >= 6 || row < 0 || row >= 5) return;
+  String key = String(point_keys[row][col]);
+  if (key == " ") return;
+  String& s = pointInput;
+  int kx = (col * 53) + 2, ky = (40 + (row * 40)) + 2;
+  flashButton(kx, ky, 49, 36, RADIUS_SM);
+
+  if (key == "ADD") {
+    double x, y;
+    if (!parsePoint(s, x, y)) {
+      showToast("Format:  x , y   e.g. 1,3");
+      drawPointKeyboardScreen();
+    } else if (numPoints >= MAX_POINTS) {
+      showToast("Max " + String(MAX_POINTS) + " points (use UNDO)");
+      drawPointKeyboardScreen();
+    } else {
+      points[numPoints].x = x;
+      points[numPoints].y = y;
+      numPoints++;
+      savePoints();
+      s = "";
+      pointCursor = 0;
+      currentState = STATE_GRAPH;
+      tft.fillScreen(BG_COLOR);
+      drawGraphScreen(true);
+    }
+  } else if (key == "BACK") {
+    currentState = STATE_GRAPH;
+    tft.fillScreen(BG_COLOR);
+    drawGraphScreen(true);
+  } else if (key == "AC") {
+    s = "";
+    pointCursor = 0;
+    updatePointInputBox();
+    drawSingleKey(row, col, point_keys);
+  } else if (key == "UNDO") {
+    if (numPoints > 0) numPoints--;
+    savePoints();
+    updatePointInputBox();
+    drawSingleKey(row, col, point_keys);
+  } else if (key == "CLR") {
+    numPoints = 0;
+    savePoints();
+    updatePointInputBox();
+    drawSingleKey(row, col, point_keys);
+  } else if (key == "DEL") {
+    if (pointCursor > 0) {
+      s.remove(pointCursor - 1, 1);
+      pointCursor--;
+    }
+    updatePointInputBox();
+    drawSingleKey(row, col, point_keys);
+  } else if (key == "<-") {
+    if (pointCursor > 0) pointCursor--;
+    updatePointInputBox();
+    drawSingleKey(row, col, point_keys);
+  } else if (key == "->") {
+    if (pointCursor < (int)s.length()) pointCursor++;
+    updatePointInputBox();
+    drawSingleKey(row, col, point_keys);
+  } else {
+    if (s.length() < 20) {
+      s = s.substring(0, pointCursor) + key + s.substring(pointCursor);
+      pointCursor += key.length();
+    }
+    updatePointInputBox();
+    drawSingleKey(row, col, point_keys);
+  }
+  waitTouchRelease();
+}
