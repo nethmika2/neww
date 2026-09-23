@@ -43,6 +43,29 @@ PomoMode pomoMode = MODE_WORK;
 bool pomoRunning = false;
 int pomodorosCompleted = 0, pomoSeconds = 25 * 60;
 unsigned long lastPomoTick = 0;
+int pomoWorkTime = DEFAULT_WORK_TIME, pomoShortTime = DEFAULT_SHORT_BREAK, pomoLongTime = DEFAULT_LONG_BREAK;
+int pomoLongEvery = DEFAULT_CYCLES_BEFORE_LONG;
+int pomoDailyGoal = DEFAULT_DAILY_GOAL;
+int pomoPhaseTotal = DEFAULT_WORK_TIME;
+PomoView pomoView = POMO_VIEW_TIMER;
+StatsTab statsTab = STATS_DAY;
+int pomoStatsPage = 0;
+int pomoActiveTask = -1;
+PomoTask pomoTasks[MAX_POMO_TASKS];
+PomoTemplate pomoTemplates[MAX_POMO_TEMPLATES];
+PomoDayStat pomoHistory[POMO_HISTORY_DAYS];
+int pomoHistoryCount = 0;
+uint8_t pomoHourly[24] = { 0 };
+uint32_t pomoHourlyDay = 0xFFFFFFFF;
+unsigned long lastPomoDayCheck = 0;
+
+// ==========================================
+// GENERIC TEXT KEYBOARD (task & preset names)
+// ==========================================
+String textInputBuf = "", textInputTitle = "";
+int textInputCursor = 0, textInputMax = POMO_NAME_LEN;
+TextTarget textInputTarget = TEXT_TARGET_NONE;
+bool textKbNumeric = false;
 
 // ==========================================
 // POWER, SCREENSAVER & CLOCK STATE
@@ -80,6 +103,8 @@ PlotPoint points[MAX_POINTS];
 int numPoints = 0;
 String pointInput = "";
 int pointCursor = 0, activeSlot = 0, cursor_idx = 5;
+bool pointKbAlpha = false;
+int old_ptsx[MAX_POINTS], old_ptsy[MAX_POINTS];
 double centerWorldX = 0.0, centerWorldY = 0.0, zoom = 15.0;
 int16_t prev_y[NUM_FUNCS][321];
 int old_ax = -1000, old_ay = -1000, old_tsx = -1, old_tsy = -1, old_boxW = 0;
@@ -129,9 +154,39 @@ const char* var_keys[5][6] = {
 };
 
 const char* point_keys[5][6] = {
-  { "7", "8", "9", ",", " ", "DEL" },
-  { "4", "5", "6", "-", " ", "AC" },
-  { "1", "2", "3", "/", " ", "BACK" },
-  { "0", ".", "pi", "UNDO", "CLR", " " },
-  { "(", ")", "<-", "->", " ", "ADD" }
+  { "7", "8", "9", ",", "ABC", "DEL" },
+  { "4", "5", "6", "-", "(", "AC" },
+  { "1", "2", "3", "/", ")", "BACK" },
+  { "0", ".", "pi", "UNDO", "CLR", "^" },
+  { "e", "sqrt()", "<-", "->", "!", "ADD" }
+};
+
+// Second page of the point keyboard: the parameter letters the grapher sliders
+// own (see sliders[] / vars[]), so a point can be placed at (2m, c+1) and then
+// follow those sliders.  x/y/t are intentionally absent - they are the plot
+// cursor, not user parameters.
+const char* point_alpha_keys[5][6] = {
+  { "a", "b", "c", "k", "123", "DEL" },
+  { "m", "n", "p", "q", "(", "AC" },
+  { "e", "pi", "+", "-", ")", "BACK" },
+  { "*", "/", "^", ",", "UNDO", "CLR" },
+  { "<-", "->", "1", "2", "3", "ADD" }
+};
+
+// The generic text keyboard used for task and preset names.  Row 5 of the
+// letter page carries the space bar, so names can hold two words.
+const char* text_alpha_keys[5][6] = {
+  { "a", "b", "c", "d", "e", "f" },
+  { "g", "h", "i", "j", "k", "l" },
+  { "m", "n", "o", "p", "q", "r" },
+  { "s", "t", "u", "v", "w", "x" },
+  { "y", "z", "SP", "<-", "->", "DEL" }
+};
+
+const char* text_num_keys[5][6] = {
+  { "1", "2", "3", "4", "5", "6" },
+  { "7", "8", "9", "0", ".", "," },
+  { "-", "+", "/", ":", "(", ")" },
+  { "#", "%", "'", "\"", "_", "&" },
+  { "abc", "SP", "<-", "->", "DEL", "OK" }
 };

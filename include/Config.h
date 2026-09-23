@@ -93,9 +93,34 @@ static const char* const NTP_3 = "pool.ntp.org";
 #define TRACKS_PER_PAGE 6
 #define TRACK_ROW_HEIGHT 27
 
-static const int WORK_TIME = 25 * 60;
-static const int SHORT_BREAK_TIME = 5 * 60;
-static const int LONG_BREAK_TIME = 15 * 60;
-static const int POMOS_BEFORE_LONG = 4;
 static const int PAN_THRESHOLD = 8;
+
+// ==========================================
+// 4. POMODORO APP
+// ==========================================
+// The defaults seed the runtime values (pomoWorkTime & co.) the first time the
+// timer is started; after that the user's own routine is restored from NVS.
+static const int DEFAULT_WORK_TIME = 25 * 60;
+static const int DEFAULT_SHORT_BREAK = 5 * 60;
+static const int DEFAULT_LONG_BREAK = 15 * 60;
+static const int DEFAULT_CYCLES_BEFORE_LONG = 4;
+static const int DEFAULT_DAILY_GOAL = 8;
+
+// Durations are edited in whole minutes, so keep the steppers inside a sane
+// band instead of letting a stray long press run away.
+static const int MIN_WORK_MINUTES = 5;
+static const int MAX_WORK_MINUTES = 90;
+static const int MIN_SHORT_MINUTES = 1;
+static const int MAX_SHORT_MINUTES = 30;
+static const int MIN_LONG_MINUTES = 5;
+static const int MAX_LONG_MINUTES = 60;
+static const int MIN_CYCLES = 2;
+static const int MAX_CYCLES = 8;
+static const int MIN_DAILY_GOAL = 1;
+static const int MAX_DAILY_GOAL = 16;
+
+#define MAX_POMO_TEMPLATES 4
+#define MAX_POMO_TASKS 6
+#define POMO_HISTORY_DAYS 90
+#define POMO_NAME_LEN 22
 static const char* const EARBUD_NAME = "soundcore R50i NC";

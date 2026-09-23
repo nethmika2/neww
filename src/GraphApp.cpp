@@ -56,11 +56,25 @@ void drawPoints(int topY) {
   tft.setFont(NULL);
   tft.setTextSize(1);
   for (int k = 0; k < numPoints; k++) {
-    int sx = worldXToScreen(points[k].x), sy = worldYToScreen(points[k].y);
+    double px = points[k].x, py = points[k].y;
+    // Parameter points are re-evaluated here, so a dot written as (2m, c)
+    // travels with the sliders - including while the play button sweeps them.
+    if (!evalPoint(k, px, py)) {
+      old_ptsx[k] = -1000;
+      continue;
+    }
+    int sx = worldXToScreen(px), sy = worldYToScreen(py);
+    // A parameter point can move between two frames.  Rather than punching a
+    // hole in the grid with an erase rectangle, ask for one clean plot so the
+    // old marker cannot ghost behind the new one.
+    if (old_ptsx[k] != -1000 && (old_ptsx[k] != sx || old_ptsy[k] != sy)) needsFullWipe = true;
+    old_ptsx[k] = sx;
+    old_ptsy[k] = sy;
     if (sx < 0 || sx > 320 || sy < topY || sy > 192) continue;
     tft.fillCircle(sx, sy, 4, TEXT_COLOR);
     tft.fillCircle(sx, sy, 2, POINT_COLOR);
-    String lbl = "(" + niceNum(points[k].x) + ", " + niceNum(points[k].y) + ")";
+    if (points[k].live) tft.drawCircle(sx, sy, 6, VAR_COLOR);
+    String lbl = "(" + niceNum(px) + ", " + niceNum(py) + ")";
     int w = lbl.length() * 6;
     int lx = sx + 7;
     if (lx + w > 318) lx = sx - 7 - w;
@@ -164,12 +178,21 @@ void tickVarAnimation() {
   drawGraphScreen(false);
 }
 
+bool hasLivePoints() {
+  for (int i = 0; i < numPoints; i++)
+    if (points[i].live) return true;
+  return false;
+}
+
 void drawGraphScreen(bool fullWipe) {
   int topY = tabsVisible ? 31 : 0;
   if (needsFullWipe && !fullWipe) {
     fullWipe = true;
     needsFullWipe = false;
   }
+  // Parameter points move with the sliders, so the cheap "paint over the old
+  // curve" path would leave a trail of dots.  Give those frames a clean plot.
+  if (!fullWipe && hasLivePoints()) fullWipe = true;
 
   if (fullWipe) {
     tft.fillRect(0, topY, 320, 240 - topY, BG_COLOR);

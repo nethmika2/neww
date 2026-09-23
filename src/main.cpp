@@ -11,6 +11,8 @@
 #include "GraphApp.h"
 #include "KeyboardApp.h"
 #include "PomodoroApp.h"
+#include "PomodoroStore.h"
+#include "TextInput.h"
 #include "SettingsApp.h"
 #include "CalibrationApp.h"
 #include "HomeApp.h"
@@ -47,7 +49,10 @@ void setup() {
 
   for (int i = 0; i < NUM_FUNCS; i++)
     for (int j = 0; j <= 320; j++) prev_y[i][j] = -1000;
+  for (int i = 0; i < MAX_POINTS; i++) old_ptsx[i] = old_ptsy[i] = -1000;
   loadFunctions();
+  loadPomoStore();
+  pomoApplyMode(MODE_WORK);
   loadPoints();
   loadVariables();
   for (int i = 0; i < NUM_FUNCS; i++) compileSlot(i);
@@ -97,27 +102,32 @@ void loop() {
 
   if (pomoRunning && millis() - lastPomoTick >= 1000) {
     lastPomoTick += 1000;
-    if (pomoSeconds > 0) pomoSeconds--;
-    else {
-      pomoRunning = false;
+    if (pomoSeconds > 0) {
+      pomoSeconds--;
+      if (currentState == STATE_POMODORO && pomoView == POMO_VIEW_TIMER && displayActive()) drawPomodoroScreen(false);
+    } else {
+      // The phase is over: credit the focus block, line up the next phase and
+      // say what happened (the display wakes up for the announcement).
+      String msg = pomoCompletePhase(true);
       setScreenPower(true);
-      if (pomoMode == MODE_WORK) {
-        pomodorosCompleted++;
-        if (pomodorosCompleted >= POMOS_BEFORE_LONG) {
-          pomoMode = MODE_LONG_BREAK;
-          pomoSeconds = LONG_BREAK_TIME;
-          pomodorosCompleted = 0;
-        } else {
-          pomoMode = MODE_SHORT_BREAK;
-          pomoSeconds = SHORT_BREAK_TIME;
-        }
-      } else {
-        pomoMode = MODE_WORK;
-        pomoSeconds = WORK_TIME;
+      if (currentState == STATE_POMODORO) {
+        // The toast paints over the screen, so the timer view is redrawn after
+        // it while the other views only need the single pass.
+        if (pomoView == POMO_VIEW_TIMER) showToast(msg);
+        drawPomodoroScreen(true);
+      } else if (displayActive()) {
+        // The phase ended while another app was open: announce it there too.
+        showToast(msg);
+        redrawCurrentScreen();
       }
-      if (currentState == STATE_POMODORO) drawPomodoroScreen(true);
     }
-    if (currentState == STATE_POMODORO && displayActive()) drawPomodoroScreen(false);
+  }
+
+  // Rolling over to a new day has to happen even while the timer is idle so
+  // the reports and the check marks stay on the right day.
+  if (millis() - lastPomoDayCheck > 30000) {
+    lastPomoDayCheck = millis();
+    pomoEnsureToday();
   }
 
   if (screensaverActive && millis() - lastSaverTick > 1000) {
@@ -185,6 +195,7 @@ void loop() {
   else if (currentState == STATE_MUSIC_LIST) handleMusicListTouch(touched, sx, sy);
   else if (currentState == STATE_POMODORO) handlePomodoroTouch(touched, sx, sy);
   else if (currentState == STATE_POINT_KBD) handlePointKeyboardTouch(touched, sx, sy);
+  else if (currentState == STATE_TEXT_KBD) handleTextKeyboardTouch(touched, sx, sy);
   else handleKeyboardTouch(touched, sx, sy);
 
   delay(2);

@@ -11,6 +11,7 @@ void drawMusicScreen(bool fullWipe);
 void drawMusicList();
 void drawCalibrationScreen();
 void drawPomodoroScreen(bool fullWipe);
+void drawTextKeyboardScreen(bool fullWipe);
 
 bool displayActive() {
   return screenOn && !screensaverActive;
@@ -32,6 +33,7 @@ void redrawCurrentScreen() {
   else if (currentState == STATE_MUSIC_LIST) drawMusicList();
   else if (currentState == STATE_CALIBRATE) drawCalibrationScreen();
   else if (currentState == STATE_POMODORO) drawPomodoroScreen(true);
+  else if (currentState == STATE_TEXT_KBD) drawTextKeyboardScreen(true);
 }
 
 void setScreenPower(bool on) {

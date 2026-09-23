@@ -53,6 +53,32 @@ extern PomoMode pomoMode;
 extern bool pomoRunning;
 extern int pomodorosCompleted, pomoSeconds;
 extern unsigned long lastPomoTick;
+// Runtime routine: these start from the Config.h defaults and are replaced by
+// the user's saved timings/preset.
+extern int pomoWorkTime, pomoShortTime, pomoLongTime, pomoLongEvery;
+extern int pomoDailyGoal;
+// Length of the phase currently on screen.  Kept separate from the configured
+// timings so editing a duration mid-session cannot corrupt the progress ring.
+extern int pomoPhaseTotal;
+extern PomoView pomoView;
+extern StatsTab statsTab;
+extern int pomoStatsPage;
+extern int pomoActiveTask;
+extern PomoTask pomoTasks[MAX_POMO_TASKS];
+extern PomoTemplate pomoTemplates[MAX_POMO_TEMPLATES];
+extern PomoDayStat pomoHistory[POMO_HISTORY_DAYS];
+extern int pomoHistoryCount;
+extern uint8_t pomoHourly[24];
+extern uint32_t pomoHourlyDay;
+extern unsigned long lastPomoDayCheck;
+
+// ==========================================
+// GENERIC TEXT KEYBOARD (task & preset names)
+// ==========================================
+extern String textInputBuf, textInputTitle;
+extern int textInputCursor, textInputMax;
+extern TextTarget textInputTarget;
+extern bool textKbNumeric;
 
 // ==========================================
 // POWER, SCREENSAVER & CLOCK STATE
@@ -74,6 +100,10 @@ extern PlotPoint points[MAX_POINTS];
 extern int numPoints;
 extern String pointInput;
 extern int pointCursor, activeSlot, cursor_idx;
+// Point entry: the second page holds the parameter letters, and the last drawn
+// marker positions let a moving (slider driven) point be erased cleanly.
+extern bool pointKbAlpha;
+extern int old_ptsx[MAX_POINTS], old_ptsy[MAX_POINTS];
 extern double centerWorldX, centerWorldY, zoom;
 extern int16_t prev_y[NUM_FUNCS][321];
 extern int old_ax, old_ay, old_tsx, old_tsy, old_boxW;
@@ -99,3 +129,6 @@ extern const char* main_keys[5][6];
 extern const char* func_keys[5][6];
 extern const char* var_keys[5][6];
 extern const char* point_keys[5][6];
+extern const char* point_alpha_keys[5][6];
+extern const char* text_alpha_keys[5][6];
+extern const char* text_num_keys[5][6];
