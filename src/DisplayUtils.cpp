@@ -110,6 +110,55 @@ void drawModernButton(int x, int y, int w, int h, int r, uint16_t bg, bool shado
   tft.drawFastHLine(x + r, y + 1, max(0, w - 2 * r), brighten565(bg, 3));
 }
 
+// ==========================================
+// SHARED LAYOUT PIECES
+// ==========================================
+void drawCard(int x, int y, int w, int h, bool active, int radius) {
+  tft.fillRoundRect(x, y, w, h, radius, active ? SURFACE_HI : SURFACE_COLOR);
+  tft.drawRoundRect(x, y, w, h, radius, active ? ACCENT_COLOR : BTN_OUTLINE);
+}
+
+void drawSectionLabel(const char* text, int x, int y) {
+  tft.setTextSize(1);
+  tft.setTextColor(MUTED_COLOR);
+  tft.setCursor(x, y);
+  tft.print(text);
+}
+
+// A pill shaped switch: the active half is filled with the accent colour and
+// the labels are painted on top, which reads much cleaner than N separate
+// buttons while costing the same number of primitives.
+void drawSegmentedControl(int x, int y, int w, int h, const char* const* labels, int count, int activeIndex) {
+  if (count < 1) return;
+  tft.fillRoundRect(x, y, w, h, h / 2, SURFACE_COLOR);
+  tft.drawRoundRect(x, y, w, h, h / 2, BTN_OUTLINE);
+  int segW = (w - 4) / count;
+  for (int i = 0; i < count; i++) {
+    int sx = x + 2 + (i * segW);
+    int sw = (i == count - 1) ? (x + w - 2 - sx) : segW;
+    bool active = (i == activeIndex);
+    if (active) tft.fillRoundRect(sx, y + 2, sw, h - 4, (h - 4) / 2, ACCENT_COLOR);
+    printCentered(labels[i], sx + (sw / 2), y + (h / 2) + 6, &FreeSansBold9pt7b, active ? BG_COLOR : MUTED_COLOR);
+  }
+}
+
+void drawProgressBar(int x, int y, int w, int h, float pct, uint16_t color) {
+  pct = constrain(pct, 0.0f, 1.0f);
+  tft.fillRoundRect(x, y, w, h, h / 2, SURFACE_COLOR);
+  int fillW = (int)(pct * (w - 4));
+  if (fillW > 0) tft.fillRoundRect(x + 2, y + 2, fillW, h - 4, (h - 4) / 2, color);
+}
+
+void drawCrosshairTarget(int cx, int cy, int r, uint16_t color) {
+  tft.drawCircle(cx, cy, r, color);
+  tft.drawCircle(cx, cy, r - 1, color);
+  tft.fillCircle(cx, cy, 4, color);
+  tft.drawFastHLine(cx - r - 8, cy, 8, color);
+  tft.drawFastHLine(cx + r + 1, cy, 8, color);
+  tft.drawFastVLine(cx, cy - r - 8, 8, color);
+  tft.drawFastVLine(cx, cy + r + 1, 8, color);
+}
+
 void flashButton(int x, int y, int w, int h, int r) {
   tft.fillRoundRect(x, y, w, h, r, PRESS_COLOR);
   delay(35);

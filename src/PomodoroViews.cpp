@@ -82,8 +82,9 @@ static void drawPomoTaskRow(int i) {
   int y = TASK_ROW_Y0 + (i * TASK_ROW_H);
   const PomoTask& t = pomoTasks[i];
   bool active = (pomoActiveTask == i);
-  tft.fillRoundRect(TASK_ROW_X, y, TASK_ROW_W, TASK_ROW_H - 2, RADIUS_SM, active ? SURFACE_HI : SURFACE_COLOR);
-  tft.drawRoundRect(TASK_ROW_X, y, TASK_ROW_W, TASK_ROW_H - 2, RADIUS_SM, active ? ACCENT_COLOR : BTN_OUTLINE);
+  drawCard(TASK_ROW_X, y, TASK_ROW_W, TASK_ROW_H - 2, active, RADIUS_SM);
+  // A short accent bar marks the item the running timer is crediting.
+  if (active) tft.fillRect(TASK_ROW_X + 1, y + 6, 3, TASK_ROW_H - 14, ACCENT_COLOR);
   // Check box
   int cbx = TASK_ROW_X + 18, cby = y + 12;
   if (t.done) {
@@ -105,26 +106,31 @@ static void drawPomoTaskRow(int i) {
   tft.setTextColor(t.done ? PLOT_COLOR : ACCENT_COLOR);
   tft.setCursor(TASK_ROW_X + 226, y + 8);
   tft.print(String(t.blocks) + "/" + String(t.target));
-  if (active) {
-    tft.fillTriangle(TASK_ROW_X + 12, y + 9, TASK_ROW_X + 12, y + 15, TASK_ROW_X + 5, y + 12, ACCENT_COLOR);
-  }
   // Delete
-  drawModernButton(TASK_ROW_X + 262, y + 3, 30, 18, 4, DEL_COLOR, false);
-  printCentered("X", TASK_ROW_X + 277, y + 16, &FreeSans9pt7b, TEXT_COLOR);
+  drawModernButton(TASK_ROW_X + 262, y + 4, 30, 16, 4, DEL_COLOR, false);
+  printCentered("X", TASK_ROW_X + 277, y + 16, NULL, TEXT_COLOR);
 }
 
 void drawPomoTasksView() {
   tft.fillScreen(BG_COLOR);
   drawPomoTopBar();
   int used = 0;
-  for (int i = 0; i < MAX_POMO_TASKS; i++)
-    if (pomoTasks[i].in_use) used++;
-  printCentered("row = focus   o = done   n/m = estimate", 160, 42, NULL, MUTED_COLOR);
+  int done = 0;
+  for (int i = 0; i < MAX_POMO_TASKS; i++) {
+    if (!pomoTasks[i].in_use) continue;
+    used++;
+    if (pomoTasks[i].done) done++;
+  }
+  drawSectionLabel("TAP A ROW TO FOCUS IT", 10, 44);
+  printCentered(String(done) + "/" + String(used) + " done", 302, 44, NULL, MUTED_COLOR);
   for (int i = 0; i < MAX_POMO_TASKS; i++) {
     if (!pomoTasks[i].in_use) continue;
     drawPomoTaskRow(i);
   }
-  if (used == 0) printCentered("Empty - add the first thing to do", 160, 110, &FreeSans9pt7b, MUTED_COLOR);
+  if (used == 0) {
+    printCentered("Nothing planned yet", 160, 104, &FreeSans9pt7b, TEXT_COLOR);
+    printCentered("Tap ADD TASK to write down the first block", 160, 126, &FreeSans9pt7b, MUTED_COLOR);
+  }
   drawModernButton(8, TASK_BTN_Y, 148, TASK_BTN_H, RADIUS_MD, PLOT_COLOR, true);
   printCentered("ADD TASK", 82, TASK_BTN_Y + 20, &FreeSansBold9pt7b, TEXT_COLOR);
   drawModernButton(164, TASK_BTN_Y, 148, TASK_BTN_H, RADIUS_MD, SURFACE_COLOR, true);
@@ -176,12 +182,12 @@ void handlePomoTasksTouch(int sx, int sy) {
 // ==========================================
 static const int PRE_CELL_W = 150;
 static const int PRE_CELL_H = 36;
-static const int PRE_ROW_H = 22;
-static const int PRE_ROW_Y0 = 148;
+static const int PRE_ROW_H = 20;
+static const int PRE_ROW_Y0 = 158;
 
 // One editable duration: label, "25m" and a pair of steppers.
 static void drawPresetCell(int x, int y, const char* label, int value, bool minutes) {
-  drawModernButton(x, y, PRE_CELL_W, PRE_CELL_H, RADIUS_SM, SURFACE_COLOR, false);
+  drawCard(x, y, PRE_CELL_W, PRE_CELL_H, false, RADIUS_SM);
   tft.setTextSize(1);
   tft.setTextColor(MUTED_COLOR);
   tft.setCursor(x + 8, y + 21);
@@ -197,39 +203,32 @@ static void drawPresetCell(int x, int y, const char* label, int value, bool minu
 static void drawPomoPresetRow(int i) {
   int y = PRE_ROW_Y0 + (i * PRE_ROW_H);
   const PomoTemplate& t = pomoTemplates[i];
-  tft.fillRoundRect(8, y, 304, PRE_ROW_H - 2, RADIUS_SM, SURFACE_COLOR);
-  tft.drawRoundRect(8, y, 304, PRE_ROW_H - 2, RADIUS_SM, BTN_OUTLINE);
+  drawCard(8, y, 304, PRE_ROW_H - 2, false, RADIUS_SM);
   tft.setFont(&FreeSans9pt7b);
   tft.setTextColor(TEXT_COLOR);
-  tft.setCursor(16, y + 16);
+  tft.setCursor(16, y + 15);
   tft.print(truncated(t.name, 18));
   tft.setFont(NULL);
   tft.setTextSize(1);
   tft.setTextColor(MUTED_COLOR);
-  tft.setCursor(166, y + 8);
+  tft.setCursor(170, y + 7);
   tft.print(pomoTemplateSummary(t));
-  drawModernButton(282, y + 2, 26, 16, 3, DEL_COLOR, false);
-  printCentered("X", 295, y + 14, NULL, TEXT_COLOR);
+  drawModernButton(284, y + 2, 24, 16, 3, DEL_COLOR, false);
+  printCentered("X", 296, y + 14, NULL, TEXT_COLOR);
 }
 
 void drawPomoPresetsView() {
   tft.fillScreen(BG_COLOR);
   drawPomoTopBar();
-  tft.setTextSize(1);
-  tft.setTextColor(MUTED_COLOR);
-  tft.setCursor(10, 46);
-  tft.print("CURRENT ROUTINE");
-  drawPresetCell(8, 52, "WORK", pomoWorkTime / 60, true);
-  drawPresetCell(162, 52, "SHORT", pomoShortTime / 60, true);
-  drawPresetCell(8, 92, "LONG", pomoLongTime / 60, true);
-  drawPresetCell(162, 92, "CYCLES", pomoLongEvery, false);
+  drawSectionLabel("CURRENT ROUTINE", 10, 46);
+  drawPresetCell(8, 50, "WORK", pomoWorkTime / 60, true);
+  drawPresetCell(162, 50, "SHORT", pomoShortTime / 60, true);
+  drawPresetCell(8, 88, "LONG", pomoLongTime / 60, true);
+  drawPresetCell(162, 88, "CYCLES", pomoLongEvery, false);
 
-  tft.setTextSize(1);
-  tft.setTextColor(MUTED_COLOR);
-  tft.setCursor(10, 142);
-  tft.print("SAVED ROUTINES");
-  drawModernButton(202, 126, 110, 24, RADIUS_SM, PLOT_COLOR, false);
-  printCentered("SAVE CURRENT", 257, 143, &FreeSans9pt7b, TEXT_COLOR);
+  drawSectionLabel("SAVED ROUTINES", 10, 142);
+  drawModernButton(196, 124, 116, 26, RADIUS_SM, PLOT_COLOR, false);
+  printCentered("SAVE CURRENT", 254, 143, &FreeSans9pt7b, TEXT_COLOR);
 
   int used = 0;
   for (int i = 0; i < MAX_POMO_TEMPLATES; i++) {
@@ -237,14 +236,17 @@ void drawPomoPresetsView() {
     drawPomoPresetRow(i);
     used++;
   }
-  if (used == 0) printCentered("Nothing saved yet - tap SAVE CURRENT", 160, 178, &FreeSans9pt7b, MUTED_COLOR);
+  if (used == 0) {
+    printCentered("Nothing saved yet", 160, 176, &FreeSans9pt7b, MUTED_COLOR);
+    printCentered("Set the timings above and tap SAVE CURRENT", 160, 196, &FreeSans9pt7b, MUTED_COLOR);
+  }
 }
 
 void handlePomoPresetsTouch(int sx, int sy) {
   // Duration steppers
   for (int cell = 0; cell < 4; cell++) {
     int x = (cell % 2 == 0) ? 8 : 162;
-    int y = (cell < 2) ? 52 : 92;
+    int y = (cell < 2) ? 50 : 88;
     int dir = 0;
     if (inRect(sx, sy, x + 96, y + 6, 24, 24)) dir = -1;
     else if (inRect(sx, sy, x + 124, y + 6, 24, 24)) dir = 1;
@@ -272,8 +274,8 @@ void handlePomoPresetsTouch(int sx, int sy) {
     drawPomoPresetsView();
     return;
   }
-  if (inRect(sx, sy, 202, 126, 110, 24)) {
-    flashButton(202, 126, 110, 24, RADIUS_SM);
+  if (inRect(sx, sy, 196, 124, 116, 26)) {
+    flashButton(196, 124, 116, 26, RADIUS_SM);
     startTextInput("SAVE ROUTINE", "", TEXT_TARGET_TEMPLATE, POMO_NAME_LEN);
     return;
   }
@@ -301,8 +303,10 @@ void handlePomoPresetsTouch(int sx, int sy) {
 // ==========================================
 // REPORTS
 // ==========================================
+static const int STATS_TAB_X = 8;
 static const int STATS_TAB_Y = 34;
-static const int STATS_TAB_H = 24;
+static const int STATS_TAB_W = 304;
+static const int STATS_TAB_H = 26;
 
 static int chartScale(int maxValue) {
   if (maxValue < 30) return 30;
@@ -316,12 +320,7 @@ static int chartScale(int maxValue) {
 
 static void drawStatsTabs() {
   static const char* const labels[3] = { "DAY", "WEEK", "MONTH" };
-  for (int i = 0; i < 3; i++) {
-    int x = 8 + (i * 103);
-    bool active = ((int)statsTab == i);
-    drawModernButton(x, STATS_TAB_Y, 96, STATS_TAB_H, RADIUS_SM, active ? ACCENT_COLOR : SURFACE_COLOR, false);
-    printCentered(labels[i], x + 48, STATS_TAB_Y + 17, &FreeSans9pt7b, active ? BG_COLOR : TEXT_COLOR);
-  }
+  drawSegmentedControl(STATS_TAB_X, STATS_TAB_Y, STATS_TAB_W, STATS_TAB_H, labels, 3, (int)statsTab);
 }
 
 static void drawDayReport() {
@@ -339,9 +338,7 @@ static void drawDayReport() {
   int goal = constrain(pomoDailyGoal, MIN_DAILY_GOAL, MAX_DAILY_GOAL);
   float pct = constrain((float)blocks / (float)goal, 0.0f, 1.0f);
   bool reached = blocks >= goal;
-  tft.fillRoundRect(20, 130, 280, 14, 7, SURFACE_COLOR);
-  int fillW = (int)(pct * 276);
-  if (fillW > 0) tft.fillRoundRect(22, 132, fillW, 10, 5, reached ? PLOT_COLOR : ACCENT_COLOR);
+  drawProgressBar(20, 130, 280, 14, pct, reached ? PLOT_COLOR : ACCENT_COLOR);
   drawModernButton(20, 152, 46, 28, RADIUS_SM, SURFACE_HI, false);
   drawMinusIcon(43, 166, TEXT_COLOR);
   drawModernButton(254, 152, 46, 28, RADIUS_SM, SURFACE_HI, false);
@@ -450,7 +447,7 @@ static void drawMonthReport() {
   for (int c = 0; c < 4; c++) {
     int cx = (c % 2 == 0) ? 10 : 162;
     int cy = cellY[c / 2];
-    tft.fillRoundRect(cx, cy, 148, 24, RADIUS_SM, SURFACE_COLOR);
+    drawCard(cx, cy, 148, 24, false, RADIUS_SM);
     tft.setTextSize(1);
     tft.setTextColor(MUTED_COLOR);
     tft.setCursor(cx + 8, cy + 8);
@@ -471,10 +468,10 @@ void drawPomoStatsView() {
 }
 
 void handlePomoStatsTouch(int sx, int sy) {
-  for (int i = 0; i < 3; i++) {
-    int x = 8 + (i * 103);
-    if (!inRect(sx, sy, x, STATS_TAB_Y, 96, STATS_TAB_H)) continue;
-    flashButton(x, STATS_TAB_Y, 96, STATS_TAB_H, RADIUS_SM);
+  if (inRect(sx, sy, STATS_TAB_X, STATS_TAB_Y, STATS_TAB_W, STATS_TAB_H)) {
+    int segW = (STATS_TAB_W - 4) / 3;
+    int i = constrain((sx - (STATS_TAB_X + 2)) / segW, 0, 2);
+    flashButton(STATS_TAB_X + 2 + (i * segW), STATS_TAB_Y + 2, segW, STATS_TAB_H - 4, (STATS_TAB_H - 4) / 2);
     if ((int)statsTab != i) {
       statsTab = (StatsTab)i;
       drawPomoStatsView();

@@ -22,6 +22,16 @@ void flashButton(int x, int y, int w, int h, int r);
 void showToast(String msg);
 String formatTime(uint32_t totalSeconds);
 
+// Shared layout pieces: every app uses the same card, segmented control and
+// progress bar so the screens line up with each other and with the 8 px margin
+// grid.  They are drawn with the same handful of primitives the old ad-hoc
+// buttons used, so nothing here costs extra frames.
+void drawCard(int x, int y, int w, int h, bool active, int radius);
+void drawSectionLabel(const char* text, int x, int y);
+void drawSegmentedControl(int x, int y, int w, int h, const char* const* labels, int count, int activeIndex);
+void drawProgressBar(int x, int y, int w, int h, float pct, uint16_t color);
+void drawCrosshairTarget(int cx, int cy, int r, uint16_t color);
+
 // Vector UI Icons
 void drawGearIcon(int cx, int cy, int r, uint16_t color);
 void drawClockIcon(int cx, int cy, int r, uint16_t color);

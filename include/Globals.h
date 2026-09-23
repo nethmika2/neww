@@ -25,7 +25,14 @@ extern BluetoothA2DPSource a2dp_source;
 extern AppState currentState;
 extern bool touch_swap_xy;
 extern int touch_x_min, touch_x_max, touch_y_min, touch_y_max, calibStep;
-extern TS_Point calTL, calTR, calBR;
+// Raw touch samples of the four corner targets, in the order TL, TR, BR, BL.
+extern TS_Point calTL, calTR, calBR, calBL;
+// Affine (4 point) calibration: screen = c[0]*raw_x + c[1]*raw_y + c[2] per
+// axis, which also absorbs rotation, shear and a swapped axis pair.  Used when
+// touchCalibrated is true, with the min/max values above as the fallback.
+extern float tcalX[3], tcalY[3];
+extern bool touchCalibrated;
+extern int calibFailCount;
 
 // ==========================================
 // AUDIO SYSTEM STATE

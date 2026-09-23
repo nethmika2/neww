@@ -18,3 +18,7 @@ private:
 };
 
 void waitTouchRelease();
+
+// Maps a raw touch sample to screen pixels.  Returns true when the 4 point
+// calibration is in use (otherwise the stored min/max axis mapping is used).
+bool applyTouchCalibration(const TS_Point& raw, int& sx, int& sy);

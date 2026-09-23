@@ -13,6 +13,7 @@
 #include "PomodoroApp.h"
 #include "PomodoroStore.h"
 #include "TextInput.h"
+#include "EarbudControls.h"
 #include "SettingsApp.h"
 #include "CalibrationApp.h"
 #include "HomeApp.h"
@@ -35,6 +36,9 @@ void setup() {
   touch_x_max = prefs.getInt("x_max", 3800);
   touch_y_min = prefs.getInt("y_min", 200);
   touch_y_max = prefs.getInt("y_max", 3800);
+  // A 4 point calibration (when one has been stored) takes over from the
+  // min/max axis mapping, which stays as the fallback for older devices.
+  loadTouchCalibration();
   screensaverEnabled = prefs.getBool("screensaver", true);
   autoSyncBoot = prefs.getBool("autosync", true);
   xAxisPi = prefs.getBool("xpi", false);
@@ -77,6 +81,8 @@ void setup() {
 // ==========================================
 void loop() {
   if (btInitialized) btConnected = a2dp_source.is_connected();
+  // Earbud buttons are queued from the Bluetooth task and applied here.
+  earbudControlsPoll();
 
   if (trackFinished) {
     trackFinished = false;
@@ -156,17 +162,10 @@ void loop() {
     }
   }
 
-  if (currentState == STATE_CALIBRATE) {
-    handleCalibrationTouch(touched, p);
-    delay(2);
-    return;
-  }
-
   int sx = -1, sy = -1;
   if (touched) {
-    int hw_x = touch_swap_xy ? p.y : p.x, hw_y = touch_swap_xy ? p.x : p.y;
-    int raw_sx = map(hw_x, touch_x_min, touch_x_max, 0, 320);
-    int raw_sy = map(hw_y, touch_y_min, touch_y_max, 0, 240);
+    int raw_sx = 0, raw_sy = 0;
+    applyTouchCalibration(p, raw_sx, raw_sy);
 
     // Snap instantly for taps or fast movements, smooth only for slow panning
     if (smoothed_x == -1 || abs(raw_sx - smoothed_x) > 25 || abs(raw_sy - smoothed_y) > 25) {
@@ -180,6 +179,14 @@ void loop() {
     sy = constrain((int)smoothed_y, 0, 240);
   } else {
     smoothed_x = -1;
+  }
+
+  // Calibration runs after the mapping so it can still see where the panel
+  // thinks the touch landed (used for its cancel button).
+  if (currentState == STATE_CALIBRATE) {
+    handleCalibrationTouch(touched, p, sx, sy);
+    delay(2);
+    return;
   }
 
   // Slider playback runs ahead of touch dispatch so a finger-down frame

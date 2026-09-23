@@ -5,10 +5,36 @@
 #include "DisplayUtils.h"
 #include "TimeService.h"
 #include "TouchDriver.h"
+#include "EarbudControls.h"
 
 // Forward declarations
 void drawHomeScreen();
 void drawCalibrationScreen();
+
+// ==========================================
+// LAYOUT
+// ==========================================
+// Four toggle cards in a 2x2 grid, then one wide card for the clock.  Cards sit
+// on the same 8 px margin grid the other apps use.
+static const int CARD_W = 148;
+static const int CARD_H = 58;
+static const int COL_L = 10;
+static const int COL_R = 162;
+static const int ROW_1 = 38;
+static const int ROW_2 = 102;
+static const int CLOCK_CARD_X = 10;
+static const int CLOCK_CARD_Y = 166;
+static const int CLOCK_CARD_W = 300;
+static const int CLOCK_CARD_H = 68;
+static const int CLOCK_BTN_Y = 196;
+static const int CLOCK_BTN_H = 30;
+static const int CLOCK_BTN_W = 70;
+
+static void drawToggleCard(int x, int y, const char* title, const char* const* labels, int active) {
+  drawCard(x, y, CARD_W, CARD_H, false, RADIUS_MD);
+  drawSectionLabel(title, x + 10, y + 16);
+  drawSegmentedControl(x + 10, y + 24, CARD_W - 20, 26, labels, 2, active);
+}
 
 void drawSettingsScreen() {
   tft.fillScreen(BG_COLOR);
@@ -18,37 +44,33 @@ void drawSettingsScreen() {
   printCentered("SETTINGS", 160, 20, &FreeSansBold9pt7b, TEXT_COLOR);
   tft.drawFastHLine(0, 30, 320, BTN_OUTLINE);
 
-  printCentered("X-Axis", 82, 50, &FreeSans9pt7b, MUTED_COLOR);
-  drawModernButton(20, 58, 60, 34, RADIUS_MD, !xAxisPi ? ACCENT_COLOR : SURFACE_COLOR, true);
-  printCentered("NUM", 50, 80, &FreeSans9pt7b, TEXT_COLOR);
-  drawModernButton(85, 58, 60, 34, RADIUS_MD, xAxisPi ? ACCENT_COLOR : SURFACE_COLOR, true);
-  printCentered("PI", 115, 80, &FreeSans9pt7b, TEXT_COLOR);
+  static const char* const axisLabels[2] = { "NUM", "PI" };
+  static const char* const idleLabels[2] = { "CLOCK", "OFF" };
+  static const char* const budLabels[2] = { "ON", "OFF" };
 
-  printCentered("Y-Axis", 237, 50, &FreeSans9pt7b, MUTED_COLOR);
-  drawModernButton(175, 58, 60, 34, RADIUS_MD, !yAxisPi ? ACCENT_COLOR : SURFACE_COLOR, true);
-  printCentered("NUM", 205, 80, &FreeSans9pt7b, TEXT_COLOR);
-  drawModernButton(240, 58, 60, 34, RADIUS_MD, yAxisPi ? ACCENT_COLOR : SURFACE_COLOR, true);
-  printCentered("PI", 270, 80, &FreeSans9pt7b, TEXT_COLOR);
+  drawToggleCard(COL_L, ROW_1, "X AXIS", axisLabels, xAxisPi ? 1 : 0);
+  drawToggleCard(COL_R, ROW_1, "Y AXIS", axisLabels, yAxisPi ? 1 : 0);
+  drawToggleCard(COL_L, ROW_2, "IDLE SCREEN", idleLabels, screensaverEnabled ? 0 : 1);
+  drawToggleCard(COL_R, ROW_2, "EARBUD BUTTONS", budLabels, earbudControlsEnabled() ? 0 : 1);
 
-  printCentered("Idle: clock / off", 82, 114, &FreeSans9pt7b, MUTED_COLOR);
-  drawModernButton(20, 122, 60, 34, RADIUS_MD, screensaverEnabled ? ACCENT_COLOR : SURFACE_COLOR, true);
-  printCentered("CLOCK", 50, 144, &FreeSans9pt7b, TEXT_COLOR);
-  drawModernButton(85, 122, 60, 34, RADIUS_MD, !screensaverEnabled ? ACCENT_COLOR : SURFACE_COLOR, true);
-  printCentered("OFF", 115, 144, &FreeSans9pt7b, TEXT_COLOR);
+  // Clock card: the time is the headline, the four buttons are the actions.
+  drawCard(CLOCK_CARD_X, CLOCK_CARD_Y, CLOCK_CARD_W, CLOCK_CARD_H, false, RADIUS_MD);
+  drawSectionLabel(timeSynced ? "CLOCK (SYNCED)" : "CLOCK (NOT SYNCED)", CLOCK_CARD_X + 10, CLOCK_CARD_Y + 18);
+  printCentered(getTimeString(), 262, CLOCK_CARD_Y + 24, &FreeSansBold18pt7b, timeSynced ? TEXT_COLOR : MUTED_COLOR);
 
-  printCentered(timeSynced ? "Clock (synced)" : "Clock (not synced)", 237, 114, &FreeSans9pt7b, MUTED_COLOR);
-  drawModernButton(175, 122, 125, 34, RADIUS_MD, SURFACE_HI, true);
-  printCentered(getTimeString(), 237, 148, &FreeSansBold18pt7b, timeSynced ? TEXT_COLOR : MUTED_COLOR);
-
-  printCentered("Time:  nudge  |  sync now  |  sync at boot", 160, 178, &FreeSans9pt7b, MUTED_COLOR);
-  drawModernButton(18, 185, 55, 40, RADIUS_MD, SURFACE_COLOR, true);
-  printCentered("+15", 45, 210, &FreeSans9pt7b, TEXT_COLOR);
-  drawModernButton(79, 185, 60, 40, RADIUS_MD, PLOT_COLOR, true);
-  printCentered("SYNC", 109, 210, &FreeSans9pt7b, TEXT_COLOR);
-  drawModernButton(145, 185, 85, 40, RADIUS_MD, autoSyncBoot ? ACCENT_COLOR : SURFACE_COLOR, true);
-  printCentered(autoSyncBoot ? "AUTO ON" : "AUTO OFF", 187, 210, &FreeSans9pt7b, TEXT_COLOR);
-  drawModernButton(236, 185, 65, 40, RADIUS_MD, F2_COLOR, true);
-  printCentered("CALIB", 268, 210, &FreeSans9pt7b, BG_COLOR);
+  int btnX = CLOCK_CARD_X + 6;
+  const int gap = 4;
+  drawModernButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM, SURFACE_HI, false);
+  printCentered("+15m", btnX + (CLOCK_BTN_W / 2), CLOCK_BTN_Y + 20, &FreeSans9pt7b, TEXT_COLOR);
+  btnX += CLOCK_BTN_W + gap;
+  drawModernButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM, PLOT_COLOR, false);
+  printCentered("SYNC", btnX + (CLOCK_BTN_W / 2), CLOCK_BTN_Y + 20, &FreeSans9pt7b, TEXT_COLOR);
+  btnX += CLOCK_BTN_W + gap;
+  drawModernButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM, autoSyncBoot ? ACCENT_COLOR : SURFACE_COLOR, false);
+  printCentered(autoSyncBoot ? "AUTO ON" : "AUTO OFF", btnX + (CLOCK_BTN_W / 2), CLOCK_BTN_Y + 20, &FreeSans9pt7b, TEXT_COLOR);
+  btnX += CLOCK_BTN_W + gap;
+  drawModernButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM, F2_COLOR, false);
+  printCentered("CALIB", btnX + (CLOCK_BTN_W / 2), CLOCK_BTN_Y + 20, &FreeSans9pt7b, BG_COLOR);
 }
 
 void handleSettingsTouch(bool touched, int sx, int sy) {
@@ -58,57 +80,80 @@ void handleSettingsTouch(bool touched, int sx, int sy) {
     flashButton(0, 0, 40, 30, 0);
     currentState = STATE_HOME;
     drawHomeScreen();
-  } else if (inRect(sx, sy, 20, 58, 60, 34)) {
-    flashButton(20, 58, 60, 34, RADIUS_MD);
-    xAxisPi = false;
-    prefs.putBool("xpi", false);
+    return;
+  }
+
+  // X axis
+  if (inRect(sx, sy, COL_L + 10, ROW_1 + 24, CARD_W - 20, 26)) {
+    bool pi = sx > COL_L + (CARD_W / 2);
+    flashButton(COL_L + 10, ROW_1 + 24, CARD_W - 20, 26, RADIUS_SM);
+    xAxisPi = pi;
+    prefs.putBool("xpi", xAxisPi);
     drawSettingsScreen();
-  } else if (inRect(sx, sy, 85, 58, 60, 34)) {
-    flashButton(85, 58, 60, 34, RADIUS_MD);
-    xAxisPi = true;
-    prefs.putBool("xpi", true);
+    return;
+  }
+  // Y axis
+  if (inRect(sx, sy, COL_R + 10, ROW_1 + 24, CARD_W - 20, 26)) {
+    bool pi = sx > COL_R + (CARD_W / 2);
+    flashButton(COL_R + 10, ROW_1 + 24, CARD_W - 20, 26, RADIUS_SM);
+    yAxisPi = pi;
+    prefs.putBool("ypi", yAxisPi);
     drawSettingsScreen();
-  } else if (inRect(sx, sy, 175, 58, 60, 34)) {
-    flashButton(175, 58, 60, 34, RADIUS_MD);
-    yAxisPi = false;
-    prefs.putBool("ypi", false);
+    return;
+  }
+  // Idle screen behaviour
+  if (inRect(sx, sy, COL_L + 10, ROW_2 + 24, CARD_W - 20, 26)) {
+    bool clock = sx <= COL_L + (CARD_W / 2);
+    flashButton(COL_L + 10, ROW_2 + 24, CARD_W - 20, 26, RADIUS_SM);
+    screensaverEnabled = clock;
+    prefs.putBool("screensaver", screensaverEnabled);
     drawSettingsScreen();
-  } else if (inRect(sx, sy, 240, 58, 60, 34)) {
-    flashButton(240, 58, 60, 34, RADIUS_MD);
-    yAxisPi = true;
-    prefs.putBool("ypi", true);
+    return;
+  }
+  // Earbud transport buttons
+  if (inRect(sx, sy, COL_R + 10, ROW_2 + 24, CARD_W - 20, 26)) {
+    bool on = sx <= COL_R + (CARD_W / 2);
+    flashButton(COL_R + 10, ROW_2 + 24, CARD_W - 20, 26, RADIUS_SM);
+    earbudControlsSetEnabled(on);
+    showToast(on ? "Earbud buttons on" : "Earbud buttons off");
     drawSettingsScreen();
-  } else if (inRect(sx, sy, 20, 122, 60, 34)) {
-    flashButton(20, 122, 60, 34, RADIUS_MD);
-    screensaverEnabled = true;
-    prefs.putBool("screensaver", true);
-    drawSettingsScreen();
-  } else if (inRect(sx, sy, 85, 122, 60, 34)) {
-    flashButton(85, 122, 60, 34, RADIUS_MD);
-    screensaverEnabled = false;
-    prefs.putBool("screensaver", false);
-    drawSettingsScreen();
-  } else if (inRect(sx, sy, 18, 185, 55, 40)) {
-    flashButton(18, 185, 55, 40, RADIUS_MD);
+    return;
+  }
+
+  int btnX = CLOCK_CARD_X + 6;
+  const int gap = 4;
+  if (inRect(sx, sy, btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H)) {
+    flashButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM);
     time_t now;
     time(&now);
     now += 15 * 60;
     struct timeval tv = { .tv_sec = now, .tv_usec = 0 };
     settimeofday(&tv, NULL);
     drawSettingsScreen();
-  } else if (inRect(sx, sy, 79, 185, 60, 40)) {
-    flashButton(79, 185, 60, 40, RADIUS_MD);
+    return;
+  }
+  btnX += CLOCK_BTN_W + gap;
+  if (inRect(sx, sy, btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H)) {
+    flashButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM);
     syncTimeNTP(true);
     drawSettingsScreen();
-  } else if (inRect(sx, sy, 145, 185, 85, 40)) {
-    flashButton(145, 185, 85, 40, RADIUS_MD);
+    return;
+  }
+  btnX += CLOCK_BTN_W + gap;
+  if (inRect(sx, sy, btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H)) {
+    flashButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM);
     autoSyncBoot = !autoSyncBoot;
     prefs.putBool("autosync", autoSyncBoot);
     drawSettingsScreen();
-  } else if (inRect(sx, sy, 236, 185, 65, 40)) {
-    flashButton(236, 185, 65, 40, RADIUS_MD);
+    return;
+  }
+  btnX += CLOCK_BTN_W + gap;
+  if (inRect(sx, sy, btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H)) {
+    flashButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM);
     currentState = STATE_CALIBRATE;
     calibStep = 0;
+    calibFailCount = 0;
     drawCalibrationScreen();
+    return;
   }
 }

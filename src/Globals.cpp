@@ -15,7 +15,11 @@ BluetoothA2DPSource a2dp_source;
 AppState currentState = STATE_HOME;
 bool touch_swap_xy = false;
 int touch_x_min = 200, touch_x_max = 3800, touch_y_min = 200, touch_y_max = 3800, calibStep = 0;
-TS_Point calTL, calTR, calBR;
+TS_Point calTL, calTR, calBR, calBL;
+float tcalX[3] = { 320.0f / 3600.0f, 0.0f, -17.8f };
+float tcalY[3] = { 0.0f, 240.0f / 3600.0f, -13.3f };
+bool touchCalibrated = false;
+int calibFailCount = 0;
 
 // ==========================================
 // AUDIO SYSTEM STATE

@@ -13,15 +13,21 @@ void drawHomeScreen();
 // ==========================================
 // TIMER SCREEN LAYOUT
 // ==========================================
-static const int POMO_MODE_Y = 34;
-static const int POMO_MODE_H = 24;
-static const int POMO_DOTS_Y = 70;
+// Everything is placed on an 8 px margin grid: the routine picker and the
+// cycle dots share the first row, the ring owns the middle and the task chip
+// plus the transport buttons sit in the two bottom rows.
+static const int POMO_MODE_X = 8;
+static const int POMO_MODE_Y = 38;
+static const int POMO_MODE_W = 196;
+static const int POMO_MODE_H = 26;
+static const int POMO_DOTS_CX = 258;
+static const int POMO_DOTS_CY = 51;
 static const int POMO_RING_CX = 160;
-static const int POMO_RING_CY = 118;
+static const int POMO_RING_CY = 120;
 static const int POMO_RING_R = 44;
 static const int POMO_RING_THICK = 6;
 static const int POMO_CHIP_X = 8;
-static const int POMO_CHIP_Y = 168;
+static const int POMO_CHIP_Y = 170;
 static const int POMO_CHIP_W = 304;
 static const int POMO_CHIP_H = 20;
 static const int POMO_BTN_Y = 194;
@@ -105,47 +111,41 @@ void pomoSetMode(PomoMode mode) {
 
 void drawPomoModeSelector() {
   static const char* const labels[3] = { "WORK", "SHORT", "LONG" };
-  static const PomoMode modes[3] = { MODE_WORK, MODE_SHORT_BREAK, MODE_LONG_BREAK };
-  static const uint16_t colors[3] = { DEL_COLOR, FUNC_COLOR, PLOT_COLOR };
-  for (int i = 0; i < 3; i++) {
-    int x = 8 + (i * 103);
-    bool active = (pomoMode == modes[i]);
-    drawModernButton(x, POMO_MODE_Y, 96, POMO_MODE_H, RADIUS_SM, active ? colors[i] : SURFACE_COLOR, false);
-    printCentered(labels[i], x + 48, POMO_MODE_Y + 17, &FreeSans9pt7b, active ? BG_COLOR : TEXT_COLOR);
-  }
+  drawSegmentedControl(POMO_MODE_X, POMO_MODE_Y, POMO_MODE_W, POMO_MODE_H, labels, 3, (int)pomoMode);
 }
 
 void drawPomoProgressDots() {
   int n = constrain(pomoLongEvery, MIN_CYCLES, MAX_CYCLES);
-  int spacing = min(26, 190 / n);
-  int startX = 160 - ((n - 1) * spacing) / 2;
+  int spacing = min(13, 96 / n);
+  int startX = POMO_DOTS_CX - ((n - 1) * spacing) / 2;
   for (int i = 0; i < n; i++) {
     int cx = startX + (i * spacing);
-    if (i < pomodorosCompleted) tft.fillCircle(cx, POMO_DOTS_Y, 5, DEL_COLOR);
-    else tft.drawCircle(cx, POMO_DOTS_Y, 5, SURFACE_HI);
+    if (i < pomodorosCompleted) tft.fillCircle(cx, POMO_DOTS_CY, 4, DEL_COLOR);
+    else tft.drawCircle(cx, POMO_DOTS_CY, 4, SURFACE_HI);
   }
-  // The current time keeps the timer screen useful as a clock too.
-  printCentered(getTimeString(), 296, POMO_DOTS_Y + 4, &FreeSans9pt7b, MUTED_COLOR);
-  tft.fillRect(258, POMO_DOTS_Y - 10, 2, 20, BG_COLOR);
+  // The label makes it obvious that the dots belong to the current cycle.
+  printCentered(String(pomodorosCompleted) + "/" + String(n), POMO_DOTS_CX, POMO_DOTS_CY + 20, NULL, MUTED_COLOR);
 }
 
 void drawPomoTaskChip() {
-  tft.fillRoundRect(POMO_CHIP_X, POMO_CHIP_Y, POMO_CHIP_W, POMO_CHIP_H, RADIUS_SM, SURFACE_COLOR);
-  tft.drawRoundRect(POMO_CHIP_X, POMO_CHIP_Y, POMO_CHIP_W, POMO_CHIP_H, RADIUS_SM, BTN_OUTLINE);
-  String label = pomoActiveTaskLabel();
-  if (label.length() == 0) {
-    printCentered("No task selected - tap TASKS", 160, POMO_CHIP_Y + 14, &FreeSans9pt7b, MUTED_COLOR);
-    return;
-  }
+  drawCard(POMO_CHIP_X, POMO_CHIP_Y, POMO_CHIP_W, POMO_CHIP_H, false, RADIUS_SM);
+  // Today's goal lives on the right so the chip carries both the current task
+  // and the progress of the day.
+  int goal = constrain(pomoDailyGoal, MIN_DAILY_GOAL, MAX_DAILY_GOAL);
+  int done = pomoStatBlocks(pomoTodayDay());
+  String goalText = String(min(done, goal)) + "/" + String(goal);
   tft.setTextSize(1);
-  tft.setTextColor(ACCENT_COLOR);
-  tft.setCursor(POMO_CHIP_X + 8, POMO_CHIP_Y + 8);
-  tft.print("NOW");
-  const int maxChars = 34;
+  tft.setTextColor(done >= goal ? PLOT_COLOR : MUTED_COLOR);
+  tft.setCursor(POMO_CHIP_X + POMO_CHIP_W - 8 - (goalText.length() * 6), POMO_CHIP_Y + 8);
+  tft.print(goalText);
+
+  String label = pomoActiveTaskLabel();
+  int maxChars = 30;
+  if (label.length() == 0) label = "No task selected - tap TASKS";
   if ((int)label.length() > maxChars) label = label.substring(0, maxChars - 2) + "..";
   tft.setFont(&FreeSans9pt7b);
-  tft.setTextColor(TEXT_COLOR);
-  tft.setCursor(POMO_CHIP_X + 34, POMO_CHIP_Y + 15);
+  tft.setTextColor(pomoActiveTask < 0 ? MUTED_COLOR : TEXT_COLOR);
+  tft.setCursor(POMO_CHIP_X + 10, POMO_CHIP_Y + 15);
   tft.print(label);
   tft.setFont(NULL);
 }
@@ -190,7 +190,7 @@ void drawPomoTimerView(bool fullWipe) {
   int endAngle = constrain((int)(pct * 360), 0, 360);
   String timeStr = formatTime(pomoSeconds);
   if (fullWipe || endAngle != lastAngle || timeStr != lastTimeStr) {
-    if (lastTimeStr.length()) printCentered(lastTimeStr, POMO_RING_CX, POMO_RING_CY + 10, &FreeSansBold18pt7b, BG_COLOR);
+    if (lastTimeStr.length()) printCentered(lastTimeStr, POMO_RING_CX, POMO_RING_CY + 14, &FreeSansBold24pt7b, BG_COLOR);
     tft.startWrite();
     for (int a = 0; a < 360; a++) {
       uint16_t col = (a < endAngle) ? timerColor : SURFACE_COLOR;
@@ -200,13 +200,13 @@ void drawPomoTimerView(bool fullWipe) {
         tft.writePixel(POMO_RING_CX + (int)lroundf(c * (POMO_RING_R - i)), POMO_RING_CY + (int)lroundf(s * (POMO_RING_R - i)), col);
     }
     tft.endWrite();
-    printCentered(timeStr, POMO_RING_CX, POMO_RING_CY + 10, &FreeSansBold18pt7b, TEXT_COLOR);
+    printCentered(timeStr, POMO_RING_CX, POMO_RING_CY + 14, &FreeSansBold24pt7b, TEXT_COLOR);
     printCentered(pomoModeTitle(), POMO_RING_CX, POMO_RING_CY - 22, &FreeSans9pt7b, MUTED_COLOR);
     lastAngle = endAngle;
     lastTimeStr = timeStr;
   }
 
-  String chip = pomoActiveTaskLabel();
+  String chip = pomoActiveTaskLabel() + "|" + String(pomoStatBlocks(pomoTodayDay())) + "/" + String(pomoDailyGoal);
   if (fullWipe || chip != lastChip) {
     drawPomoTaskChip();
     lastChip = chip;
@@ -302,15 +302,16 @@ void handlePomodoroTouch(bool touched, int sx, int sy) {
   }
 
   // ---- timer view ----
-  for (int i = 0; i < 3; i++) {
-    int x = 8 + (i * 103);
-    if (inRect(sx, sy, x, POMO_MODE_Y, 96, POMO_MODE_H)) {
-      flashButton(x, POMO_MODE_Y, 96, POMO_MODE_H, RADIUS_SM);
-      PomoMode want = (i == 0) ? MODE_WORK : (i == 1 ? MODE_SHORT_BREAK : MODE_LONG_BREAK);
-      if (want != pomoMode) pomoSetMode(want);
-      else drawPomodoroScreen(true);
-      return;
-    }
+  if (inRect(sx, sy, POMO_MODE_X, POMO_MODE_Y, POMO_MODE_W, POMO_MODE_H)) {
+    // The segmented control is one pill, so the tap is mapped to a third of it
+    // instead of three separate buttons.
+    int segW = (POMO_MODE_W - 4) / 3;
+    int i = constrain((sx - (POMO_MODE_X + 2)) / segW, 0, 2);
+    flashButton(POMO_MODE_X + 2 + (i * segW), POMO_MODE_Y + 2, segW, POMO_MODE_H - 4, (POMO_MODE_H - 4) / 2);
+    PomoMode want = (i == 0) ? MODE_WORK : (i == 1 ? MODE_SHORT_BREAK : MODE_LONG_BREAK);
+    if (want != pomoMode) pomoSetMode(want);
+    else drawPomodoroScreen(true);
+    return;
   }
   if (inRect(sx, sy, POMO_CHIP_X, POMO_CHIP_Y, POMO_CHIP_W, POMO_CHIP_H)) {
     flashButton(POMO_CHIP_X, POMO_CHIP_Y, POMO_CHIP_W, POMO_CHIP_H, RADIUS_SM);
