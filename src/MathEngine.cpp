@@ -22,10 +22,23 @@ String niceNum(double v) {
   return s;
 }
 
+// True when one of the slider letters appears in `eq` as a whole token, so the
+// `a` of tan() or the `c` of cos() is not mistaken for a parameter.
+bool hasParamToken(const String& eq) {
+  for (int v = 0; v < NUM_CUSTOM_VARS; v++) {
+    const String& name = sliders[v].name;
+    for (int at = eq.indexOf(name); at >= 0; at = eq.indexOf(name, at + name.length())) {
+      bool leftIsWord = at > 0 && (isAlphaChar(eq[at - 1]) || isDigitChar(eq[at - 1]) || eq[at - 1] == '_');
+      int after = at + name.length();
+      bool rightIsWord = after < (int)eq.length() && (isAlphaChar(eq[after]) || isDigitChar(eq[after]) || eq[after] == '_');
+      if (!leftIsWord && !rightIsWord) return true;
+    }
+  }
+  return false;
+}
+
 void flagActiveVariables(String eq) {
-  // Only match a variable as a token.  A plain indexOf() marks the `a` in
-  // tan() and the `c` in cos() as sliders, which makes the variable panel
-  // noisy and is very unlike a graphing calculator.
+  if (!hasParamToken(eq)) return;
   for (int v = 0; v < NUM_CUSTOM_VARS; v++) {
     const String& name = sliders[v].name;
     for (int at = eq.indexOf(name); at >= 0; at = eq.indexOf(name, at + name.length())) {
@@ -44,6 +57,13 @@ void refreshActiveVariables() {
   for (int v = 0; v < NUM_CUSTOM_VARS; v++) sliders[v].in_use = false;
   for (int i = 0; i < NUM_FUNCS; i++) {
     if (funcs[i].input.length()) flagActiveVariables(funcs[i].input);
+  }
+  // Points typed with parameters light up the same sliders, so a dot added as
+  // (2m, c) can be driven from the VAR panel (or the play button).
+  for (int i = 0; i < numPoints; i++) {
+    if (!points[i].live) continue;
+    flagActiveVariables(points[i].exprX);
+    flagActiveVariables(points[i].exprY);
   }
 }
 
@@ -167,18 +187,129 @@ void compileSlot(int i) {
   flagActiveVariables(fixed);
 }
 
-bool parsePoint(String s, double& x, double& y) {
-  int c = s.indexOf(',');
+// ==========================================
+// POINT ENTRY (numbers, functions and parameters)
+// ==========================================
+// Points are evaluated against the parameter sliders only.  x/y/t are left out
+// on purpose: they describe the plot cursor, and a dot bound to them would
+// wander off on its own.
+static te_variable point_vars[NUM_CUSTOM_VARS] = {
+  { "a", &sliders[0].value }, { "b", &sliders[1].value }, { "c", &sliders[2].value }, { "k", &sliders[3].value },
+  { "m", &sliders[4].value }, { "n", &sliders[5].value }, { "p", &sliders[6].value }, { "q", &sliders[7].value }
+};
+
+// First comma that is not inside brackets, so function calls such as
+// "(max(a,b), 3)" still split in the right place.  -1 when there is none.
+static int topLevelComma(const String& s) {
+  int depth = 0;
+  for (int i = 0; i < (int)s.length(); i++) {
+    char c = s[i];
+    if (c == '(') depth++;
+    else if (c == ')') depth--;
+    else if (c == ',' && depth <= 0) return i;
+  }
+  return -1;
+}
+
+bool compilePointInput(String s, te_expr*& cx, te_expr*& cy, String& left, String& right, bool& live) {
+  cx = nullptr;
+  cy = nullptr;
+  s.trim();
+  // The input box already draws the surrounding parentheses; accept them typed
+  // as well so "(2m, 3)" and "2m, 3" behave the same.
+  while (s.length() >= 2 && s[0] == '(' && s[s.length() - 1] == ')') {
+    int depth = 0;
+    bool whole = true;
+    for (int i = 0; i < (int)s.length(); i++) {
+      if (s[i] == '(') depth++;
+      else if (s[i] == ')') {
+        depth--;
+        if (depth == 0 && i != (int)s.length() - 1) {
+          whole = false;
+          break;
+        }
+      }
+    }
+    if (!whole || depth != 0) break;
+    s = s.substring(1, s.length() - 1);
+    s.trim();
+  }
+  int c = topLevelComma(s);
   if (c < 0) return false;
-  String a = s.substring(0, c), b = s.substring(c + 1);
-  a.trim();
-  b.trim();
-  if (a.length() == 0 || b.length() == 0 || b.indexOf(',') >= 0) return false;
+  left = s.substring(0, c);
+  right = s.substring(c + 1);
+  left.trim();
+  right.trim();
+  if (left.length() == 0 || right.length() == 0) return false;
+
+  // Implicit products (2m, 3c) are expanded first, which is also what makes the
+  // parameter letters detectable as tokens.
+  String fixedX = fixEquation(left);
+  String fixedY = fixEquation(right);
   int err;
-  x = te_interp(a.c_str(), &err);
-  if (err) return false;
-  y = te_interp(b.c_str(), &err);
-  if (err) return false;
+  cx = te_compile(fixedX.c_str(), point_vars, NUM_CUSTOM_VARS, &err);
+  if (!cx) return false;
+  cy = te_compile(fixedY.c_str(), point_vars, NUM_CUSTOM_VARS, &err);
+  if (!cy) {
+    te_free(cx);
+    cx = nullptr;
+    return false;
+  }
+  live = hasParamToken(fixedX) || hasParamToken(fixedY);
+  return true;
+}
+
+void freePointExprs(int idx) {
+  if (idx < 0 || idx >= MAX_POINTS) return;
+  if (points[idx].compX) te_free(points[idx].compX);
+  if (points[idx].compY) te_free(points[idx].compY);
+  points[idx].compX = nullptr;
+  points[idx].compY = nullptr;
+  points[idx].live = false;
+}
+
+// Rebuild the compiled form of a stored point (used after loading from NVS).
+void rebuildPointExprs(int idx) {
+  if (idx < 0 || idx >= MAX_POINTS) return;
+  freePointExprs(idx);
+  if (points[idx].exprX.length() == 0 || points[idx].exprY.length() == 0) return;
+  String whole = points[idx].exprX + "," + points[idx].exprY;
+  te_expr* cx = nullptr;
+  te_expr* cy = nullptr;
+  String left, right;
+  bool live = false;
+  if (!compilePointInput(whole, cx, cy, left, right, live)) return;
+  points[idx].compX = cx;
+  points[idx].compY = cy;
+  points[idx].live = live;
+}
+
+// Current position of a point.  Parameter points are re-evaluated on every
+// redraw, which is what makes them follow the sliders (and the play button).
+bool evalPoint(int idx, double& x, double& y) {
+  if (idx < 0 || idx >= MAX_POINTS) return false;
+  if (points[idx].live && points[idx].compX && points[idx].compY) {
+    double px = te_eval(points[idx].compX);
+    double py = te_eval(points[idx].compY);
+    if (isnan(px) || isinf(px) || isnan(py) || isinf(py)) return false;
+    points[idx].x = px;
+    points[idx].y = py;
+  }
+  x = points[idx].x;
+  y = points[idx].y;
+  return !isnan(x) && !isinf(x) && !isnan(y) && !isinf(y);
+}
+
+bool parsePoint(String s, double& x, double& y) {
+  te_expr* cx = nullptr;
+  te_expr* cy = nullptr;
+  String left, right;
+  bool live = false;
+  if (!compilePointInput(s, cx, cy, left, right, live)) return false;
+  x = te_eval(cx);
+  y = te_eval(cy);
+  te_free(cx);
+  te_free(cy);
   return !isnan(x) && !isinf(x) && !isnan(y) && !isinf(y);
 }
 

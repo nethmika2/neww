@@ -1,0 +1,49 @@
+# Analytical Chemistry
+
+## Titration essentials
+A titration finds the unknown concentration of an analyte by adding a standard
+solution of exactly known concentration until the reaction is just complete.
+
+- Standard solution: a reagent of accurately known concentration, prepared from
+  a primary standard or standardised against one.
+- Primary standard: high purity, stable in air, not hygroscopic, high molar mass
+  so the weighing error stays small.
+- Burette reading: read the bottom of the meniscus at eye level, to the nearest
+  0.05 cm3; record both the initial and the final reading.
+- Concordant titres agree to within 0.10 cm3. Use the mean of the concordant
+  values and ignore any rough trial run.
+- Always rinse the burette with the titrant and the pipette with the solution it
+  will deliver, otherwise the solution is diluted and the result is wrong.
+
+Q: Why is a rough titration carried out first?
+A: To find the approximate end point quickly, so the accurate titrations can be
+run by adding the titrant rapidly to within a few cm3 of the end point and then
+dropwise. This keeps every accurate titre concordant and saves time.
+
+## Acid-base indicators
+An indicator is a weak acid whose conjugate base has a different colour, so the
+colour change happens over the pH range where the two forms are both present.
+
+- Phenolphthalein: colourless below pH 8.3, pink above pH 10, so it suits a
+  strong base titrated against a weak acid.
+- Methyl orange: red below pH 3.1, yellow above pH 4.4, so it suits a strong
+  acid titrated against a weak base.
+- The end point must sit on the steep part of the pH curve; for a strong acid
+  with a strong base almost any indicator works.
+
+## Redox titrations
+- Potassium manganate(VII) is its own indicator: the purple MnO4- ion is
+  decolourised as it is reduced to almost colourless Mn2+.
+- Acidify with dilute sulfuric acid, never with hydrochloric acid, because
+  chloride ions are oxidised to chlorine and the titre comes out too high.
+- Iodine-thiosulfate titration: starch is added near the end point, when the
+  solution is pale straw coloured, because starch-iodine complex held too long
+  does not break down cleanly.
+
+## Worked calculation
+25.00 cm3 of 0.100 mol dm-3 sodium hydroxide is neutralised by 23.40 cm3 of
+hydrochloric acid.
+
+- Moles of NaOH = 0.100 x 0.02500 = 2.50 x 10-3 mol.
+- The equation is 1:1, so the acid also supplies 2.50 x 10-3 mol.
+- Concentration of the acid = 2.50 x 10-3 / 0.02340 = 0.107 mol dm-3.

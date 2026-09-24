@@ -1,5 +1,6 @@
 #include "Storage.h"
 #include "Globals.h"
+#include "MathEngine.h"
 
 void saveFunctions() {
   for (int i = 0; i < NUM_FUNCS; i++) {
@@ -20,6 +21,10 @@ void savePoints() {
   for (int i = 0; i < numPoints; i++) {
     prefs.putDouble(("px" + String(i)).c_str(), points[i].x);
     prefs.putDouble(("py" + String(i)).c_str(), points[i].y);
+    // Keep the typed halves so a point built from parameters (2m, c+1) is
+    // still parameter driven after a reboot.
+    prefs.putString(("pex" + String(i)).c_str(), points[i].exprX);
+    prefs.putString(("pey" + String(i)).c_str(), points[i].exprY);
   }
 }
 
@@ -28,6 +33,9 @@ void loadPoints() {
   for (int i = 0; i < numPoints; i++) {
     points[i].x = prefs.getDouble(("px" + String(i)).c_str(), 0);
     points[i].y = prefs.getDouble(("py" + String(i)).c_str(), 0);
+    points[i].exprX = prefs.getString(("pex" + String(i)).c_str(), "");
+    points[i].exprY = prefs.getString(("pey" + String(i)).c_str(), "");
+    rebuildPointExprs(i);
   }
 }
 

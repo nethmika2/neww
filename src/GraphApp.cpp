@@ -56,11 +56,25 @@ void drawPoints(int topY) {
   tft.setFont(NULL);
   tft.setTextSize(1);
   for (int k = 0; k < numPoints; k++) {
-    int sx = worldXToScreen(points[k].x), sy = worldYToScreen(points[k].y);
+    double px = points[k].x, py = points[k].y;
+    // Parameter points are re-evaluated here, so a dot written as (2m, c)
+    // travels with the sliders - including while the play button sweeps them.
+    if (!evalPoint(k, px, py)) {
+      old_ptsx[k] = -1000;
+      continue;
+    }
+    int sx = worldXToScreen(px), sy = worldYToScreen(py);
+    // A parameter point can move between two frames.  Rather than punching a
+    // hole in the grid with an erase rectangle, ask for one clean plot so the
+    // old marker cannot ghost behind the new one.
+    if (old_ptsx[k] != -1000 && (old_ptsx[k] != sx || old_ptsy[k] != sy)) needsFullWipe = true;
+    old_ptsx[k] = sx;
+    old_ptsy[k] = sy;
     if (sx < 0 || sx > 320 || sy < topY || sy > 192) continue;
     tft.fillCircle(sx, sy, 4, TEXT_COLOR);
     tft.fillCircle(sx, sy, 2, POINT_COLOR);
-    String lbl = "(" + niceNum(points[k].x) + ", " + niceNum(points[k].y) + ")";
+    if (points[k].live) tft.drawCircle(sx, sy, 6, VAR_COLOR);
+    String lbl = "(" + niceNum(px) + ", " + niceNum(py) + ")";
     int w = lbl.length() * 6;
     int lx = sx + 7;
     if (lx + w > 318) lx = sx - 7 - w;
@@ -164,12 +178,21 @@ void tickVarAnimation() {
   drawGraphScreen(false);
 }
 
+bool hasLivePoints() {
+  for (int i = 0; i < numPoints; i++)
+    if (points[i].live) return true;
+  return false;
+}
+
 void drawGraphScreen(bool fullWipe) {
   int topY = tabsVisible ? 31 : 0;
   if (needsFullWipe && !fullWipe) {
     fullWipe = true;
     needsFullWipe = false;
   }
+  // Parameter points move with the sliders, so the cheap "paint over the old
+  // curve" path would leave a trail of dots.  Give those frames a clean plot.
+  if (!fullWipe && hasLivePoints()) fullWipe = true;
 
   if (fullWipe) {
     tft.fillRect(0, topY, 320, 240 - topY, BG_COLOR);
@@ -381,63 +404,60 @@ void drawGraphScreen(bool fullWipe) {
 }
 
 void drawTopBar() {
-  if (tabsVisible) {
-    drawModernButton(0, 0, 40, 30, 0, DEL_COLOR, false);
-    drawBackChevron(20, 15, TEXT_COLOR);
-    drawFunctionTabs();
-  } else {
-    drawModernButton(0, 0, 40, 30, 0, DEL_COLOR, false);
-    drawBackChevron(20, 15, TEXT_COLOR);
-  }
-  drawModernButton(280, 0, 40, 30, 0, SURFACE_HI, false);
-  drawChevron(300, 15, tabsVisible, TEXT_COLOR);
-  if (tabsVisible) tft.drawFastHLine(0, 30, 320, BTN_OUTLINE);
+  // A single quiet strip: back tile, the function tabs, and the chevron that
+  // collapses the plot area.  The bar never changes colour between states.
+  tft.fillRect(0, 0, 320, 30, SURFACE_COLOR);
+  tft.drawFastHLine(0, 30, 320, BTN_OUTLINE);
+  drawModernButton(6, 3, 34, 24, RADIUS_SM, SURFACE_HI, false);
+  drawBackChevron(23, 15, TEXT_COLOR);
+  if (tabsVisible) drawFunctionTabs();
+  drawModernButton(280, 3, 34, 24, RADIUS_SM, SURFACE_HI, false);
+  drawChevron(297, 15, tabsVisible, TEXT_COLOR);
 }
 
 void drawFunctionTabs() {
-  // Six narrow expression tabs fit between the back and collapse buttons.
-  // Like Desmos, the colored dot is the visibility switch and the rest of
-  // the row opens that expression for editing.
+  // Six narrow expression tabs between the back tile and the collapse button.
+  // Each one carries a colour dot (the visibility switch, like Desmos), the
+  // truncated expression, and an accent underline when it is being edited.
   const int tabW = 240 / NUM_FUNCS;
   for (int i = 0; i < NUM_FUNCS; i++) {
     int x = 40 + (i * tabW);
-    uint16_t tabBg = funcs[i].visible ? SURFACE_HI : BG_COLOR;
-    tft.fillRect(x, 0, tabW, 30, tabBg);
+    bool active = (i == activeSlot);
+    bool broken = (funcs[i].input.length() > 0 && funcs[i].exprX == nullptr);
+    tft.fillRect(x, 0, tabW, 30, active ? SURFACE_HI : SURFACE_COLOR);
     tft.drawFastVLine(x, 0, 30, BTN_OUTLINE);
-    if (i == activeSlot) tft.drawRect(x + 1, 1, tabW - 2, 28, funcs[i].color);
-    if (funcs[i].visible) tft.fillCircle(x + 7, 15, 4, funcs[i].color);
-    else tft.drawCircle(x + 7, 15, 4, MUTED_COLOR);
-    if (funcs[i].input.length() > 0 && funcs[i].exprX == nullptr) {
-      tft.setTextColor(DEL_COLOR);
-      tft.setTextSize(1);
-      tft.setCursor(x + tabW - 8, 2);
-      tft.print("!");
-    }
-    int maxChars = max(2, (tabW - 14) / 6);
+    if (active) tft.fillRect(x, 28, tabW, 2, funcs[i].color);
+    if (funcs[i].visible) tft.fillCircle(x + 8, 14, 4, funcs[i].color);
+    else tft.drawCircle(x + 8, 14, 4, MUTED_COLOR);
+    int maxChars = max(2, (tabW - 16) / 6);
     String truncEq = funcs[i].input;
     if (truncEq.length() > maxChars) truncEq = truncEq.substring(0, maxChars - 1) + ".";
     if (truncEq.length() == 0) truncEq = "+";
-    printPrettyEquation(x + 13, 11, truncEq, -1, funcs[i].visible ? TEXT_COLOR : MUTED_COLOR, 1);
+    // A broken expression turns its own label red instead of sprouting a
+    // floating marker that reads like an alignment bug.
+    uint16_t labelColor = broken ? DEL_COLOR : (funcs[i].visible ? TEXT_COLOR : MUTED_COLOR);
+    printPrettyEquation(x + 15, 10, truncEq, -1, labelColor, 1);
   }
 }
 
 void drawBottomControls() {
-  drawModernButton(10, 195, 50, 40, RADIUS_MD, SURFACE_COLOR, true);
-  printCentered("CLR", 35, 220, &FreeSans9pt7b, TEXT_COLOR);
-  drawModernButton(65, 195, 55, 40, RADIUS_MD, SURFACE_COLOR, true);
-  printCentered("PNT", 92, 220, &FreeSans9pt7b, TEXT_COLOR);
+  // Same pill row as the other apps, all on the 8 px grid.
+  drawModernButton(12, 196, 52, 36, RADIUS_MD, SURFACE_COLOR, false);
+  printCentered("CLR", 38, 219, &FreeSans9pt7b, TEXT_COLOR);
+  drawModernButton(70, 196, 56, 36, RADIUS_MD, SURFACE_COLOR, false);
+  printCentered("POINT", 98, 219, &FreeSans9pt7b, TEXT_COLOR);
   bool hasVars = false;
   for (int v = 0; v < NUM_CUSTOM_VARS; v++)
     if (sliders[v].in_use) {
       hasVars = true;
       break;
     }
-  drawModernButton(125, 195, 50, 40, RADIUS_MD, hasVars ? ACCENT_COLOR : SURFACE_COLOR, true);
-  printCentered("VAR", 150, 220, &FreeSans9pt7b, hasVars ? BG_COLOR : TEXT_COLOR);
-  drawModernButton(220, 195, 40, 40, RADIUS_MD, SURFACE_COLOR, true);
-  drawPlusIcon(240, 215, TEXT_COLOR);
-  drawModernButton(270, 195, 40, 40, RADIUS_MD, SURFACE_COLOR, true);
-  drawMinusIcon(290, 215, TEXT_COLOR);
+  drawModernButton(132, 196, 56, 36, RADIUS_MD, hasVars ? ACCENT_COLOR : SURFACE_COLOR, false);
+  printCentered("VARS", 160, 219, &FreeSans9pt7b, hasVars ? BG_COLOR : TEXT_COLOR);
+  drawModernButton(216, 196, 44, 36, RADIUS_MD, SURFACE_COLOR, false);
+  drawPlusIcon(238, 214, TEXT_COLOR);
+  drawModernButton(268, 196, 44, 36, RADIUS_MD, SURFACE_COLOR, false);
+  drawMinusIcon(290, 214, TEXT_COLOR);
 }
 
 void handleGraphTouch(bool touched, int sx, int sy) {
@@ -503,14 +523,14 @@ void handleGraphTouch(bool touched, int sx, int sy) {
         return;
       }
       if (inRect(sx, sy, 0, 0, 40, 30)) {
-        flashButton(0, 0, 40, 30, 0);
+        flashButton(6, 3, 34, 24, RADIUS_SM);
         currentState = STATE_HOME;
         drawHomeScreen();
         while (ts.touched()) delay(10);
         touchActive = false;
         return;
       } else if (inRect(sx, sy, 280, 0, 40, 30)) {
-        flashButton(280, 0, 40, 30, 0);
+        flashButton(280, 3, 34, 24, RADIUS_SM);
         tabsVisible = !tabsVisible;
         drawGraphScreen(true);
         delay(250);
@@ -521,9 +541,9 @@ void handleGraphTouch(bool touched, int sx, int sy) {
         touchActive = false;
         delay(200);
         return;
-      } else if (inRect(sx, sy, 10, 195, 50, 40)) {
+      } else if (inRect(sx, sy, 12, 196, 52, 36)) {
         // Reset the viewport without disturbing the expression list.
-        flashButton(10, 195, 50, 40, RADIUS_MD);
+        flashButton(12, 196, 52, 36, RADIUS_MD);
         centerWorldX = 0;
         centerWorldY = 0;
         zoom = 15.0;
@@ -531,8 +551,8 @@ void handleGraphTouch(bool touched, int sx, int sy) {
         drawGraphScreen(true);
         touchActive = false;
         return;
-      } else if (inRect(sx, sy, 65, 195, 55, 40)) {
-        flashButton(65, 195, 55, 40, RADIUS_MD);
+      } else if (inRect(sx, sy, 70, 196, 56, 36)) {
+        flashButton(70, 196, 56, 36, RADIUS_MD);
         pointInput = "";
         pointCursor = 0;
         currentState = STATE_POINT_KBD;
@@ -540,8 +560,8 @@ void handleGraphTouch(bool touched, int sx, int sy) {
         while (ts.touched()) delay(10);
         touchActive = false;
         return;
-      } else if (inRect(sx, sy, 125, 195, 50, 40)) {
-        flashButton(125, 195, 50, 40, RADIUS_MD);
+      } else if (inRect(sx, sy, 132, 196, 56, 36)) {
+        flashButton(132, 196, 56, 36, RADIUS_MD);
         bool hasVars = false;
         for (int v = 0; v < NUM_CUSTOM_VARS; v++)
           if (sliders[v].in_use) {
@@ -554,14 +574,14 @@ void handleGraphTouch(bool touched, int sx, int sy) {
         } else showToast("Use letters like m,c,t in eq");
         touchActive = false;
         return;
-      } else if (inRect(sx, sy, 220, 195, 40, 40)) {
-        flashButton(220, 195, 40, 40, RADIUS_MD);
-        holdZoom(1.08, 220, 195, 40, 40);
+      } else if (inRect(sx, sy, 216, 196, 44, 36)) {
+        flashButton(216, 196, 44, 36, RADIUS_MD);
+        holdZoom(1.08, 216, 196, 44, 36);
         touchActive = false;
         return;
-      } else if (inRect(sx, sy, 270, 195, 40, 40)) {
-        flashButton(270, 195, 40, 40, RADIUS_MD);
-        holdZoom(1.0 / 1.08, 270, 195, 40, 40);
+      } else if (inRect(sx, sy, 268, 196, 44, 36)) {
+        flashButton(268, 196, 44, 36, RADIUS_MD);
+        holdZoom(1.0 / 1.08, 268, 196, 44, 36);
         touchActive = false;
         return;
       }

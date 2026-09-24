@@ -1,4 +1,5 @@
 #include "TouchDriver.h"
+#include <math.h>
 #include "Globals.h"
 
 void SoftTouch::begin() {
@@ -87,10 +88,33 @@ TS_Point SoftTouch::getPoint() {
   return last;
 }
 
+// Waits for the finger to lift so one tap cannot trigger two actions.  The
+// loop is bounded: if the panel keeps reporting a touch (a stuck reading, a
+// ghost touch while charging) the UI must carry on instead of freezing.
 void waitTouchRelease() {
   unsigned long lastTouch = millis();
-  while (millis() - lastTouch < 40) {
+  for (int guard = 0; guard < 600; guard++) {
+    if (millis() - lastTouch >= 40) return;
     if (ts.touched()) lastTouch = millis();
     delay(2);
   }
+}
+
+// ==========================================
+// TOUCH MAPPING
+// ==========================================
+// The 4 point calibration stores an affine transform per axis, so the touch
+// panel does not have to be perfectly aligned with the display: rotation,
+// shear and a swapped axis pair are all absorbed by the coefficients.  Devices
+// calibrated by an older build fall back to the min/max mapping below.
+bool applyTouchCalibration(const TS_Point& raw, int& sx, int& sy) {
+  if (touchCalibrated) {
+    sx = constrain((int)lroundf(tcalX[0] * raw.x + tcalX[1] * raw.y + tcalX[2]), 0, 320);
+    sy = constrain((int)lroundf(tcalY[0] * raw.x + tcalY[1] * raw.y + tcalY[2]), 0, 240);
+    return true;
+  }
+  int hw_x = touch_swap_xy ? raw.y : raw.x, hw_y = touch_swap_xy ? raw.x : raw.y;
+  sx = constrain(map(hw_x, touch_x_min, touch_x_max, 0, 320), 0, 320);
+  sy = constrain(map(hw_y, touch_y_min, touch_y_max, 0, 240), 0, 240);
+  return false;
 }

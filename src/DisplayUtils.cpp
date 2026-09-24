@@ -1,5 +1,6 @@
 #include "DisplayUtils.h"
 #include "TimeService.h"
+#include <string.h>
 
 // Forward declarations for apps redrawn on wake
 void drawHomeScreen();
@@ -11,6 +12,8 @@ void drawMusicScreen(bool fullWipe);
 void drawMusicList();
 void drawCalibrationScreen();
 void drawPomodoroScreen(bool fullWipe);
+void drawTextKeyboardScreen(bool fullWipe);
+void drawStudyScreen(bool fullWipe);
 
 bool displayActive() {
   return screenOn && !screensaverActive;
@@ -32,6 +35,8 @@ void redrawCurrentScreen() {
   else if (currentState == STATE_MUSIC_LIST) drawMusicList();
   else if (currentState == STATE_CALIBRATE) drawCalibrationScreen();
   else if (currentState == STATE_POMODORO) drawPomodoroScreen(true);
+  else if (currentState == STATE_TEXT_KBD) drawTextKeyboardScreen(true);
+  else if (currentState == STATE_STUDY) drawStudyScreen(true);
 }
 
 void setScreenPower(bool on) {
@@ -101,6 +106,20 @@ void printCentered(String text, int centerX, int baselineY, const GFXfont* font,
   tft.setFont(NULL);
 }
 
+// Right aligned text: used for counters that sit against the 8 px margin, so a
+// widening number grows to the left instead of running off the panel.
+void printRight(String text, int rightX, int baselineY, const GFXfont* font, uint16_t color) {
+  tft.setFont(font);
+  tft.setTextColor(color);
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.getTextBounds(text.c_str(), 0, baselineY, &x1, &y1, &w, &h);
+  int x = rightX - (int)w;
+  tft.setCursor(x < 0 ? 0 : x, baselineY);
+  tft.print(text);
+  tft.setFont(NULL);
+}
+
 void drawModernButton(int x, int y, int w, int h, int r, uint16_t bg, bool shadow) {
   if (shadow) tft.fillRoundRect(x + 2, y + 2, w, h, r, SHADOW_COLOR);
   tft.fillRoundRect(x, y, w, h, r, bg);
@@ -108,14 +127,121 @@ void drawModernButton(int x, int y, int w, int h, int r, uint16_t bg, bool shado
   tft.drawFastHLine(x + r, y + 1, max(0, w - 2 * r), brighten565(bg, 3));
 }
 
+// ==========================================
+// SHARED LAYOUT PIECES
+// ==========================================
+// Every app screen starts with the same 30 px title bar: a hairline at the
+// bottom, an optional back chevron on the left and the title centred.  Keeping
+// it in one place is what makes the screens look like parts of one product.
+void drawScreenHeader(const char* title, bool showBack) {
+  tft.fillRect(0, 0, 320, 34, SURFACE_COLOR);
+  tft.drawFastHLine(0, 34, 320, BTN_OUTLINE);
+  if (showBack) {
+    drawModernButton(6, 5, 34, 24, RADIUS_SM, SURFACE_HI, false);
+    drawBackChevron(23, 17, TEXT_COLOR);
+  }
+  if (title && title[0]) printCentered(title, showBack ? 168 : 160, 25, &FreeSansBold12pt7b, TEXT_COLOR);
+}
+
+// A square tile used for the home screen and for icon buttons: a faint tint of
+// the accent colour instead of a saturated fill, which keeps the icons legible
+// while the canvas stays calm.
+void drawIconTile(int x, int y, int w, int h, int radius, uint16_t tint) {
+  tft.fillRoundRect(x, y, w, h, radius, SURFACE_COLOR);
+  tft.drawRoundRect(x, y, w, h, radius, brighten565(tint, -3));
+}
+
+// Status pill: "connected", "searching", a counter.  Small, quiet, aligned.
+void drawPanel(int x, int y, int w, int h, const char* title) {
+  drawCard(x, y, w, h, false, RADIUS_MD);
+  if (title && title[0]) drawSectionLabel(title, x + 12, y + 8);
+}
+
+void drawStatusPill(int x, int y, int w, const char* text, uint16_t dotColor, uint16_t textColor) {
+  int h = 18;
+  tft.fillRoundRect(x, y, w, h, h / 2, SURFACE_COLOR);
+  tft.drawRoundRect(x, y, w, h, h / 2, BTN_OUTLINE);
+  if (dotColor) tft.fillCircle(x + 11, y + (h / 2), 3, dotColor);
+  tft.setTextSize(1);
+  tft.setTextColor(textColor);
+  tft.setCursor(x + (dotColor ? 20 : 10), y + 6);
+  tft.print(text);
+}
+
+void drawCard(int x, int y, int w, int h, bool active, int radius) {
+  tft.fillRoundRect(x, y, w, h, radius, active ? SURFACE_HI : SURFACE_COLOR);
+  tft.drawRoundRect(x, y, w, h, radius, active ? ACCENT_COLOR : BTN_OUTLINE);
+}
+
+// Small caption with a hairline rule running to the right margin.  It costs a
+// single line and turns a bare caption into a section divider, which is what
+// makes the longer pages readable at a glance.
+void drawSectionLabel(const char* text, int x, int y) {
+  tft.setTextSize(1);
+  tft.setTextColor(MUTED_COLOR);
+  tft.setCursor(x, y);
+  tft.print(text);
+  int w = (int)strlen(text) * 6;
+  int ruleX = x + w + 8;
+  if (ruleX < 306) tft.drawFastHLine(ruleX, y + 3, 312 - ruleX, BTN_OUTLINE);
+}
+
+// A pill shaped switch: the active half is filled with the accent colour and
+// the labels are painted on top, which reads much cleaner than N separate
+// buttons while costing the same number of primitives.
+void drawSegmentedControl(int x, int y, int w, int h, const char* const* labels, int count, int activeIndex) {
+  if (count < 1) return;
+  tft.fillRoundRect(x, y, w, h, h / 2, SURFACE_COLOR);
+  tft.drawRoundRect(x, y, w, h, h / 2, BTN_OUTLINE);
+  int segW = (w - 4) / count;
+  for (int i = 0; i < count; i++) {
+    int sx = x + 2 + (i * segW);
+    int sw = (i == count - 1) ? (x + w - 2 - sx) : segW;
+    bool active = (i == activeIndex);
+    if (active) {
+      tft.fillRoundRect(sx, y + 2, sw, h - 4, (h - 4) / 2, ACCENT_COLOR);
+      tft.drawRoundRect(sx, y + 2, sw, h - 4, (h - 4) / 2, brighten565(ACCENT_COLOR, 4));
+    }
+    printCentered(labels[i], sx + (sw / 2), y + (h / 2) + 6, &FreeSansBold9pt7b, active ? BG_COLOR : MUTED_COLOR);
+  }
+}
+
+void drawProgressBar(int x, int y, int w, int h, float pct, uint16_t color) {
+  pct = constrain(pct, 0.0f, 1.0f);
+  tft.fillRoundRect(x, y, w, h, h / 2, SURFACE_COLOR);
+  int fillW = (int)(pct * (w - 4));
+  if (fillW > 0) tft.fillRoundRect(x + 2, y + 2, fillW, h - 4, (h - 4) / 2, color);
+}
+
+void drawNoteIcon(int cx, int cy, int size, uint16_t color) {
+  int head = size / 3;
+  tft.fillCircle(cx - head, cy + head, head, color);
+  tft.fillRect(cx + size / 6 - 1, cy - size / 2, 2, size, color);
+  tft.fillRect(cx + size / 6 - 1, cy - size / 2, size / 2, 2, color);
+}
+
+void drawCrosshairTarget(int cx, int cy, int r, uint16_t color) {
+  tft.drawCircle(cx, cy, r, color);
+  tft.drawCircle(cx, cy, r - 1, color);
+  tft.fillCircle(cx, cy, 4, color);
+  tft.drawFastHLine(cx - r - 8, cy, 8, color);
+  tft.drawFastHLine(cx + r + 1, cy, 8, color);
+  tft.drawFastVLine(cx, cy - r - 8, 8, color);
+  tft.drawFastVLine(cx, cy + r + 1, 8, color);
+}
+
 void flashButton(int x, int y, int w, int h, int r) {
   tft.fillRoundRect(x, y, w, h, r, PRESS_COLOR);
   delay(35);
 }
 
+// Announcement that paints over the middle of the screen for a moment.  A
+// neutral card with an accent edge reads as information, not as an error.
 void showToast(String msg) {
-  drawModernButton(20, 90, 280, 40, RADIUS_MD, DEL_COLOR, true);
-  printCentered(msg, 160, 115, &FreeSans9pt7b, TEXT_COLOR);
+  tft.fillRoundRect(22, 92, 276, 40, RADIUS_MD, SURFACE_HI);
+  tft.drawRoundRect(22, 92, 276, 40, RADIUS_MD, BTN_OUTLINE);
+  tft.fillRoundRect(22, 92, 4, 40, 2, ACCENT_COLOR);
+  printCentered(msg, 162, 117, &FreeSans9pt7b, TEXT_COLOR);
   delay(900);
 }
 
@@ -166,6 +292,29 @@ void drawPlusIcon(int cx, int cy, uint16_t color) {
 
 void drawMinusIcon(int cx, int cy, uint16_t color) {
   tft.fillRect(cx - 8, cy - 2, 16, 4, color);
+}
+
+// A trash can, not a minus: list rows use a minus for "fewer", so the delete
+// affordance has to look like something else or the two read alike.
+void drawTrashIcon(int cx, int cy, uint16_t color) {
+  tft.fillRect(cx - 3, cy - 8, 6, 2, color);        // handle
+  tft.fillRect(cx - 6, cy - 6, 13, 2, color);       // lid
+  tft.drawRect(cx - 5, cy - 4, 11, 10, color);      // body
+  tft.drawFastVLine(cx - 2, cy - 2, 6, color);      // ribs
+  tft.drawFastVLine(cx + 2, cy - 2, 6, color);
+}
+
+// An open book: two leaves either side of a spine, with a couple of text lines.
+void drawBookIcon(int cx, int cy, int halfW, uint16_t color) {
+  int top = cy - (halfW / 2);
+  int h = halfW;
+  tft.fillRect(cx - halfW, top, halfW - 2, h, color);
+  tft.fillRect(cx + 2, top, halfW - 2, h, color);
+  tft.drawFastVLine(cx, top - 2, h + 4, color);
+  tft.fillRect(cx - halfW + 3, top + 3, halfW - 7, 2, BG_COLOR);
+  tft.fillRect(cx - halfW + 3, top + 8, halfW - 9, 2, BG_COLOR);
+  tft.fillRect(cx + 5, top + 3, halfW - 7, 2, BG_COLOR);
+  tft.fillRect(cx + 5, top + 8, halfW - 9, 2, BG_COLOR);
 }
 
 int drawRadical(int x, int y, int size, uint16_t color) {
