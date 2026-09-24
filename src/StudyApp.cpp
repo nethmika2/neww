@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include "Globals.h"
 #include "DisplayUtils.h"
+#include "Storage.h"
 
 // Needed by the back tile / home shortcut.
 void drawHomeScreen();
@@ -147,12 +148,19 @@ static int stCardScrollMax = 0;
 // ==========================================
 // CARD WORK GUARD
 // ==========================================
-// Everything the study app does with the card is bookended by a flag in NVS.  A
-// board that resets in the middle of a read leaves the flag set, and the next
-// entry into the app says so and waits for a retry instead of repeating
-// whatever upset it.  Two writes per note are nothing next to the read itself.
-static void studyCardWork(bool active) { prefs.putBool("strisk", active); }
-static bool studyCardWorkPending() { return prefs.getBool("strisk", false); }
+// Everything the study app does with the card is bookended by a flag that
+// lives in RTC memory: it survives a reset (which is exactly the case worth
+// catching) and costs no flash writes.  A board that resets in the middle of a
+// read leaves it set, and the next entry into the app says so and waits for a
+// retry instead of repeating whatever upset it.
+static RTC_NOINIT_ATTR uint32_t stCardGuard;
+static const uint32_t ST_GUARD_MAGIC = 0x5301C0DEu;
+
+static void studyCardWork(bool active) { stCardGuard = active ? ST_GUARD_MAGIC : 0; }
+static bool studyCardWorkPending() { return stCardGuard == ST_GUARD_MAGIC; }
+
+void studySetCardGuard(bool active) { studyCardWork(active); }
+bool studyCardGuardPending() { return studyCardWorkPending(); }
 
 // ==========================================
 // SMALL HELPERS
@@ -227,13 +235,23 @@ static bool studyIsNoteFile(const char* path) {
 // The "# Title" line carries the proper subject name, and reading a couple of
 // hundred bytes for it is cheap even on a slow card, so the list shows real
 // titles without parsing the whole note.
+// Fills `out` with the note's "# Title" line when it has one.  A note without a
+// title line keeps whatever name it already had: clearing it first is how a
+// plain "hello world" note ended up as a nameless row.
 static void studyReadTitle(const char* path, char* out, int outLen) {
-  out[0] = 0;
+  unsigned long t0 = millis();
+  bool locked = sdLockBegin(250);
   File f = SD.open(path, FILE_READ);
-  if (!f) return;
+  if (!f) {
+    if (locked) sdLockEnd();
+    Serial.printf("[W][study] cannot open %s (%lu ms, lock %d)\n", path, millis() - t0, (int)locked);
+    return;
+  }
   char buf[192];
   int n = (int)f.read((uint8_t*)buf, sizeof(buf) - 1);
   f.close();
+  if (locked) sdLockEnd();
+  Serial.printf("[I][study] title %s -> %d bytes in %lu ms\n", path, n, millis() - t0);
   if (n <= 0) return;
   buf[n] = 0;
   char* line = buf;
@@ -248,7 +266,7 @@ static void studyReadTitle(const char* path, char* out, int outLen) {
         strncpy(out, clean, outLen - 1);
         out[outLen - 1] = 0;
       }
-      return;
+      return;                                    // a title line: nothing to add
     }
     if (!eol) return;
     line = eol + 1;
@@ -261,12 +279,19 @@ static void studyReadTitle(const char* path, char* out, int outLen) {
 static int studyListDir(const char* dir) {
   Serial.printf("[I][study] list %s (heap %u)\n", dir, (unsigned)ESP.getFreeHeap());
   studyCardWork(true);
+  bool locked = sdLockBegin(500);
+  if (!locked) Serial.println("[W][study] card busy - listing anyway");
   File handle = SD.open(dir, FILE_READ);
   if (!handle || !handle.isDirectory()) {
     Serial.printf("[I][study] no folder %s\n", dir);
+    if (locked) sdLockEnd();
     studyCardWork(false);
     return 0;
   }
+  // Names only, with the folder handle owned for as short a time as possible.
+  // The notes are opened for their titles in studyReadTitles(), once the list is
+  // on screen and this handle is closed: the card then sees one operation at a
+  // time, which is what some cards need to stay reliable.
   int examined = 0;
   unsigned long start = millis();
   File entry = handle.openNextFile();
@@ -283,17 +308,8 @@ static int studyListDir(const char* dir) {
         memset(&s, 0, sizeof(s));
         studyMakePath(dir, raw, s.path, ST_PATH_LEN);
         studyNameFromPath(raw, s.name, ST_NAME_LEN);
-        studyReadTitle(s.path, s.name, ST_NAME_LEN);   // one bounded 192-byte read
         uint32_t bytes = (uint32_t)entry.size();
         s.sizeKB = (uint16_t)min(9999UL, (unsigned long)(bytes / 1024UL) + (bytes % 1024 ? 1 : 0));
-        for (int c = 0; c < stCountCacheUsed; c++) {
-          if (strcmp(stCountCache[c].path, s.path) == 0) {
-            s.topics = stCountCache[c].topics;
-            s.cards = stCountCache[c].cards;
-            s.counted = true;
-            break;
-          }
-        }
         stSubjectCount++;
       }
     }
@@ -302,8 +318,38 @@ static int studyListDir(const char* dir) {
     entry = handle.openNextFile();
   }
   handle.close();
+  if (locked) sdLockEnd();
   studyCardWork(false);
+  Serial.printf("[I][study] %d entries in %s listed in %lu ms\n", examined, dir, millis() - start);
   return stSubjectCount;
+}
+
+// One bounded 192-byte read per note for its "# Title" line, plus the counts a
+// note collected earlier in the session.  Returns true when a name changed, so
+// the caller knows whether the list needs repainting.
+static bool studyReadTitles() {
+  bool changed = false;
+  for (int i = 0; i < stSubjectCount; i++) {
+    StudySubject& s = stSubjects[i];
+    char title[ST_NAME_LEN];
+    title[0] = 0;
+    studyReadTitle(s.path, title, ST_NAME_LEN);
+    for (int c = 0; c < stCountCacheUsed; c++) {
+      if (strcmp(stCountCache[c].path, s.path) == 0) {
+        s.topics = stCountCache[c].topics;
+        s.cards = stCountCache[c].cards;
+        s.counted = true;
+        break;
+      }
+    }
+    if (title[0] && strcmp(title, s.name) != 0) {
+      strncpy(s.name, title, ST_NAME_LEN - 1);
+      s.name[ST_NAME_LEN - 1] = 0;
+      changed = true;
+    }
+    yield();
+  }
+  return changed;
 }
 
 // Counts for a note that was just parsed are remembered for the list.
@@ -384,7 +430,9 @@ bool studyScanFile(const char* path, int* topics, int* cards) {
 // ==========================================
 int studySubjectCount() { return stSubjectCount; }
 
-void studyRefreshSubjects() {
+// Lists the notes folder (falling back to the card root) and keeps the entries,
+// without opening a single note.  Returns false when the card is not answering.
+static bool studyBuildList() {
   stSubjectCount = 0;
   // The card is mounted at boot; retrying once here means a card pushed in
   // later works after a RELOAD instead of a reboot.  The bus itself is left as
@@ -396,7 +444,7 @@ void studyRefreshSubjects() {
   }
   if (!sdReady) {
     Serial.println("[I][study] no card");
-    return;
+    return false;
   }
 
   // Listing a folder only stats the entries: no note is read here, so opening
@@ -422,6 +470,23 @@ void studyRefreshSubjects() {
   }
 
   Serial.printf("[I][study] %d notes from %s\n", stSubjectCount, stFromCardRoot ? "card root" : ST_DIR);
+  return true;
+}
+
+void studyRefreshSubjects() {
+  if (!studyBuildList()) return;
+  studyReadTitles();
+}
+
+// Entry and RELOAD: the list goes up from the folder entries first, so the
+// screen is never empty while notes are being read.
+static void studyListThenReadTitles() {
+  if (!studyBuildList()) {
+    drawStudyScreen(true);
+    return;
+  }
+  drawStudyScreen(true);
+  if (studyReadTitles()) drawStudyScreen(true);
 }
 
 // ==========================================
@@ -651,8 +716,10 @@ static bool studyLoadSubject(int index) {
 
   Serial.printf("[I][study] open %s (heap %u)\n", stSubjects[index].path, (unsigned)ESP.getFreeHeap());
   studyCardWork(true);
+  bool locked = sdLockBegin(500);
   File f = SD.open(stSubjects[index].path, FILE_READ);
   if (!f) {
+    if (locked) sdLockEnd();
     studyCardWork(false);
     return false;
   }
@@ -697,6 +764,7 @@ static bool studyLoadSubject(int index) {
     studyHandleRawLine(line);
   }
   f.close();
+  if (locked) sdLockEnd();
   studyCardWork(false);
 
   stLineOff[stLineCount] = (uint16_t)stPoolUsed;
@@ -771,6 +839,7 @@ static void studyDrawHeader(const char* title, bool back) {
 static void drawStudySubjects() {
   tft.fillScreen(BG_COLOR);
   studyDrawHeader("STUDY", true);
+  Serial.println("[I][study]   header up");
 
   // Both empty states keep the RELOAD action: it also retries the card mount.
   if (!sdReady || stSubjectCount == 0) {
@@ -820,6 +889,7 @@ static void drawStudySubjects() {
     printCentered("CARDS", 279, y + 18, NULL, ACCENT_COLOR);
   }
   tft.endWrite();
+  Serial.println("[I][study]   rows up");
 
   // Footer: reload action, scroll control and the subject count.
   tft.fillRect(0, ST_PAGE_BOTTOM, 320, 240 - ST_PAGE_BOTTOM, BG_COLOR);
@@ -1077,6 +1147,11 @@ static void drawStudyCards() {
 // ==========================================
 void drawStudyScreen(bool fullWipe) {
   if (!fullWipe) return;  // everything here is redrawn wholesale on change
+  // One line per paint: if a board ever stops answering again, the serial log
+  // names the step it stopped on and the next fix is a small one.
+  unsigned long t0 = millis();
+  Serial.printf("[I][study] draw view %d (%d subjects, heap %u)\n", (int)stView, stSubjectCount,
+                (unsigned)ESP.getFreeHeap());
   // A reader or drill without a loaded note falls back to the list, which is
   // also the state a wake from the screensaver redraws into.
   if (!stLoaded && (stView == STUDY_VIEW_READER || stView == STUDY_VIEW_CARDS)) stView = STUDY_VIEW_SUBJECTS;
@@ -1084,6 +1159,7 @@ void drawStudyScreen(bool fullWipe) {
   else if (stView == STUDY_VIEW_TOPICS) drawStudyTopics();
   else if (stView == STUDY_VIEW_READER) drawStudyReader();
   else drawStudyCards();
+  Serial.printf("[I][study] draw done in %lu ms\n", millis() - t0);
 }
 
 // ==========================================
@@ -1159,6 +1235,7 @@ void studyEnterApp() {
   tft.fillScreen(BG_COLOR);
   drawScreenHeader("STUDY", true);
   printCentered("Reading the card...", 160, 108, &FreeSans9pt7b, MUTED_COLOR);
+  Serial.println("[I][study] splash up");
   // A finished read clears the flag; a set flag means the previous one never
   // finished, so say so and wait for a retry instead of repeating it.
   if (studyCardWorkPending()) {
@@ -1170,8 +1247,7 @@ void studyEnterApp() {
     drawStudyCardTrouble();
     return;
   }
-  studyRefreshSubjects();
-  drawStudyScreen(true);
+  studyListThenReadTitles();
 }
 
 void studyRelease() {
@@ -1216,8 +1292,8 @@ static void handleStudySubjectsTouch(int sx, int sy) {
     tft.fillScreen(BG_COLOR);
     drawScreenHeader("STUDY", true);
     printCentered("Reading the card...", 160, 108, &FreeSans9pt7b, MUTED_COLOR);
-    studyRefreshSubjects();
-    drawStudyScreen(true);
+    Serial.println("[I][study] splash up (reload)");
+    studyListThenReadTitles();
     return;
   }
   if (stSubjectCount == 0) return;                 // nothing else to tap

@@ -2,6 +2,15 @@
 #include "Globals.h"
 #include "MathEngine.h"
 
+bool sdLockBegin(uint32_t timeoutMs) {
+  if (!audioMutex) return true;                 // audio never started
+  return xSemaphoreTake(audioMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+
+void sdLockEnd() {
+  if (audioMutex) xSemaphoreGive(audioMutex);
+}
+
 void saveFunctions() {
   for (int i = 0; i < NUM_FUNCS; i++) {
     prefs.putString(("eq" + String(i)).c_str(), funcs[i].input);

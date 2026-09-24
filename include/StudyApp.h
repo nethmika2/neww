@@ -34,6 +34,11 @@ enum StudyView {
 bool studyScanFile(const char* path, int* topics, int* cards);
 // Bytes of note text currently held from the heap (0 when the app is closed).
 int studyPoolBytes();
+// Marks a card operation as in progress and reads it back (host tests); a real
+// board gets the marking from the app itself, and the flag lives in RTC memory
+// so it survives the reset that interrupting a card read would cause.
+void studySetCardGuard(bool active);
+bool studyCardGuardPending();
 // Re-lists the notes folder (falling back to the card root) and rebuilds the
 // subject list.  Called on entry and by the RELOAD action; it only stats
 // directory entries, so it is fast even with large notes.

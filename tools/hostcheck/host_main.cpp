@@ -886,19 +886,39 @@ static void testStudy() {
   CHECK(hostDrewText("(truncated - split this note)"));
   studyRelease();
 
+  // The plainest possible note - the "hello world" file that broke on hardware:
+  // no markers at all, so the row shows the file name and the reader shows the
+  // text.  Nothing here may touch a pool, a topic index or a card.
+  hostSetFreeHeap(200000);
+  studyRelease();
+  SD.reset();
+  hostMakeFile("/study/hello world.txt", "hello world\nthis is a note file\n");
+  sdReady = true;
+  studyRefreshSubjects();
+  CHECK_EQ(studySubjectCount(), 1);
+  HostDraw::reset();
+  studyEnterApp();
+  CHECK(hostDrewText("hello world"));
+  CHECK(hostDrewText("tap to open"));
+  handleStudyTouch(true, 60, 57);                // open it
+  CHECK(hostDrewText("hello world"));            // the reader shows the text
+  CHECK_EQ(studyPoolBytes(), 16384);
+  studyRelease();
+  CHECK_EQ(studyPoolBytes(), 0);
+
   // A board that reset inside a card read leaves the guard flag set, so the app
   // says so and waits for a retry instead of repeating the same work.
   hostSetFreeHeap(200000);
   SD.reset();
   CHECK_EQ(installSampleNotes(), 3);
-  prefs.putBool("strisk", true);
+  studySetCardGuard(true);
   studyEnterApp();
   CHECK_EQ(studySubjectCount(), 0);              // nothing was listed
   CHECK(hostDrewText("The card read stopped last time"));
   CHECK(hostDrewText("RETRY"));
   handleStudyTouch(true, 60, 220);               // RETRY
   CHECK_EQ(studySubjectCount(), 3);
-  CHECK(!prefs.getBool("strisk", false));        // and the flag is clear again
+  CHECK(!studyCardGuardPending());               // and the flag is clear again
 }
 
 static void testPersistence() {
@@ -1135,7 +1155,7 @@ static void testRendering() {
   {
     studyRelease();
     SD.reset();
-    prefs.putBool("strisk", true);
+    studySetCardGuard(true);
     HostDraw::reset();
     studyEnterApp();
     HostDraw::dump("shots/25-study-card-trouble.txt");

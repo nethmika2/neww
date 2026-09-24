@@ -264,6 +264,12 @@ struct HostSpiPin {
 
 // The free heap is settable so the tests can drive the "cramped heap" paths
 // without having to actually exhaust the host.
+#ifndef RTC_NOINIT_ATTR
+// On the real chip this section survives a reset (which is the point: it
+// records that a card read was in progress); on the host it is a plain global.
+#define RTC_NOINIT_ATTR
+#endif
+
 uint32_t &hostFreeHeapValue();
 void hostSetFreeHeap(uint32_t v);
 
