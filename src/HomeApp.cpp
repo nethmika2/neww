@@ -53,7 +53,7 @@ void drawHomeScreen() {
   tft.fillScreen(BG_COLOR);
   // Same chrome as every other screen; the clock and the gear ride on top of
   // the shared bar.
-  drawScreenHeader("SMARTPAD", false);
+  drawScreenHeader("POCKET HUB", false);
   drawModernButton(280, 5, 34, 24, RADIUS_SM, SURFACE_HI, false);
   drawGearIcon(297, 17, 8, TEXT_COLOR);
   drawHomeClock();
@@ -97,6 +97,18 @@ void handleHomeTouch(bool touched, int sx, int sy) {
     if (!btInitialized) {
       tft.fillScreen(BG_COLOR);
       printCentered("Initializing Audio...", 160, 100, &FreeSansBold9pt7b, TEXT_COLOR);
+      // The check comes first and counts the ring buffer, so a failed attempt
+      // costs nothing: the 16 KB is not left allocated for the next try.
+      uint32_t heap = (uint32_t)ESP.getFreeHeap();
+      uint32_t need = (uint32_t)BT_MIN_HEAP + (uint32_t)RING_BUF_SIZE;
+      Serial.printf("[I][music] heap %u, Bluetooth needs %u\n", (unsigned)heap, (unsigned)need);
+      if (heap < need) {
+        printCentered("Not enough memory for Bluetooth", 160, 130, &FreeSans9pt7b, DEL_COLOR);
+        printCentered("Close other apps and try again", 160, 148, &FreeSans9pt7b, MUTED_COLOR);
+        delay(2500);
+        drawHomeScreen();
+        return;
+      }
       if (!audioRingBuffer) {
         audioRingBuffer = (uint8_t*)malloc(RING_BUF_SIZE);
         if (audioRingBuffer) memset(audioRingBuffer, 0, RING_BUF_SIZE);
@@ -106,12 +118,6 @@ void handleHomeTouch(bool touched, int sx, int sy) {
           drawHomeScreen();
           return;
         }
-      }
-      if (ESP.getFreeHeap() < BT_MIN_HEAP) {
-        printCentered("Not enough memory for Bluetooth", 160, 130, &FreeSans9pt7b, DEL_COLOR);
-        delay(2500);
-        drawHomeScreen();
-        return;
       }
       if (!audioTaskHandle) {
         xTaskCreatePinnedToCore(audioFeederTask, "AudioFeeder", 4096, NULL, 2, &audioTaskHandle, 1);

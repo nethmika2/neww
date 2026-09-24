@@ -32,6 +32,8 @@ enum StudyView {
 // Counts topics and flashcards in one note file by streaming it (used by the
 // host tests and tools).  Returns false when the file cannot be opened.
 bool studyScanFile(const char* path, int* topics, int* cards);
+// Bytes of note text currently held from the heap (0 when the app is closed).
+int studyPoolBytes();
 // Re-lists the notes folder (falling back to the card root) and rebuilds the
 // subject list.  Called on entry and by the RELOAD action; it only stats
 // directory entries, so it is fast even with large notes.

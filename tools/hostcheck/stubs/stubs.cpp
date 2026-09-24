@@ -118,6 +118,12 @@ extern "C" void ccall_app_rc_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_
 // and ones that return just the base name.
 void hostSetNameBaseOnly(bool v) { fs::nameBaseOnly() = v; }
 
+uint32_t &hostFreeHeapValue() {
+  static uint32_t v = 200000;
+  return v;
+}
+void hostSetFreeHeap(uint32_t v) { hostFreeHeapValue() = v; }
+
 void hostMakeFile(const char *path, const char *text) {
   fs::File f = SD.open(path, FILE_WRITE);
   f.write((const uint8_t *)text, strlen(text));

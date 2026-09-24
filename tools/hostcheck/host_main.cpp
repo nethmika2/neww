@@ -856,6 +856,49 @@ static void testStudy() {
   CHECK_EQ(installSampleNotes(), 3);
   studyRefreshSubjects();
   CHECK_EQ(studySubjectCount(), 3);
+
+  // The note text is taken from the heap while a note is open and handed back
+  // when the app is left: the Bluetooth stack wants that DRAM for the music app.
+  studyRelease();
+  CHECK_EQ(studyPoolBytes(), 0);
+  studyRefreshSubjects();
+  handleStudyTouch(true, 60, 57);                // open a note
+  CHECK(studyPoolBytes() >= 8192);
+  studyRelease();
+  CHECK_EQ(studyPoolBytes(), 0);
+
+  // A cramped heap must not stop the app: the pool steps down, the note says it
+  // was cut, and the title still lists.
+  hostSetFreeHeap(30000);
+  studyRelease();
+  SD.reset();
+  std::string big;
+  big = "# Big note\n## Long topic\n";
+  for (int i = 0; i < 900; i++) big += "a line of note text that is long enough to wrap over\n";
+  hostMakeFile("/study/big.txt", big.c_str());
+  sdReady = true;
+  studyRefreshSubjects();
+  CHECK_EQ(studySubjectCount(), 1);
+  handleStudyTouch(true, 60, 57);                // open it
+  CHECK_EQ(studyPoolBytes(), 4096);              // the ladder stepped down
+  CHECK(hostDrewText("Big note"));
+  handleStudyTouch(true, 60, 51);                // read the topic
+  CHECK(hostDrewText("(truncated - split this note)"));
+  studyRelease();
+
+  // A board that reset inside a card read leaves the guard flag set, so the app
+  // says so and waits for a retry instead of repeating the same work.
+  hostSetFreeHeap(200000);
+  SD.reset();
+  CHECK_EQ(installSampleNotes(), 3);
+  prefs.putBool("strisk", true);
+  studyEnterApp();
+  CHECK_EQ(studySubjectCount(), 0);              // nothing was listed
+  CHECK(hostDrewText("The card read stopped last time"));
+  CHECK(hostDrewText("RETRY"));
+  handleStudyTouch(true, 60, 220);               // RETRY
+  CHECK_EQ(studySubjectCount(), 3);
+  CHECK(!prefs.getBool("strisk", false));        // and the flag is clear again
 }
 
 static void testPersistence() {
@@ -1086,6 +1129,21 @@ static void testRendering() {
     installSampleNotes();
     sdReady = true;
     studyRefreshSubjects();
+  }
+  // The panel shown when the board reset inside a card read: the app says so
+  // and waits for RETRY instead of repeating it.
+  {
+    studyRelease();
+    SD.reset();
+    prefs.putBool("strisk", true);
+    HostDraw::reset();
+    studyEnterApp();
+    HostDraw::dump("shots/25-study-card-trouble.txt");
+    prefs.putBool("strisk", false);
+    currentState = STATE_HOME;
+    HostDraw::reset();
+    drawHomeScreen();
+    HostDraw::dump("shots/01-home.txt");       // home, with the new title
   }
   HostDraw::reset();
 

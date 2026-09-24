@@ -36,7 +36,7 @@
 #define SD_MISO 19
 #define SD_CLK 18
 #define SD_CS 5
-#define SD_SPI_HZ 20000000
+#define SD_SPI_HZ 10000000
 
 // Wi-Fi & NTP Configuration
 static const char* const WIFI_SSID = "Dialog 4G New";

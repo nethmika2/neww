@@ -24,6 +24,10 @@
 // ==========================================
 void setup() {
   Serial.begin(115200);
+  delay(50);
+  // First line of every boot: how much RAM the firmware left itself.  A number
+  // far below ~200 KB is what slows the Bluetooth start down later.
+  Serial.printf("[I][boot] free heap %u\n", (unsigned)ESP.getFreeHeap());
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
   displaySPI.begin(TFT_CLK, TFT_MISO, TFT_MOSI, TFT_CS);

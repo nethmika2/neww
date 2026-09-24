@@ -262,9 +262,14 @@ struct HostSpiPin {
   HostSpiPin &operator=(int) { return *this; }
 };
 
+// The free heap is settable so the tests can drive the "cramped heap" paths
+// without having to actually exhaust the host.
+uint32_t &hostFreeHeapValue();
+void hostSetFreeHeap(uint32_t v);
+
 class EspClass {
  public:
-  uint32_t getFreeHeap() { return 200000; }
+  uint32_t getFreeHeap() { return hostFreeHeapValue(); }
   uint32_t getHeapSize() { return 320000; }
   uint32_t getMinFreeHeap() { return 150000; }
   uint32_t getPsramSize() { return 0; }

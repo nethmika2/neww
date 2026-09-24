@@ -17,7 +17,7 @@ void drawHomeScreen();
 // 16 KB leaves the Bluetooth stack its 120 KB of free heap when the audio app
 // starts; that is roughly 330 wrapped lines, about twelve screens of notes, and
 // anything longer is cut with a visible notice rather than half drawn.
-static const int ST_BUF_BYTES = 16384;
+static const int ST_BUF_BYTES = 16384;      // preferred pool, not a reserved block
 static const int ST_MAX_LINES = 400;
 static const int ST_MAX_TOPICS = 96;
 static const int ST_MAX_CARDS = 128;
@@ -36,6 +36,9 @@ static const unsigned long ST_DIR_BUDGET_MS = 1500;
 // The budget only starts applying after a handful of entries: a normal /study
 // folder is small, and those notes must always get their real titles.
 static const int ST_DIR_BUDGET_GRACE = 8;
+// Heap left free when the note pool is taken, so the apps that need big blocks
+// (the Bluetooth stack) can still start after a visit to Study.
+static const int ST_HEAP_RESERVE = 24000;
 static const unsigned long ST_LOAD_BUDGET_MS = 2500;
 
 // ==========================================
@@ -102,7 +105,14 @@ struct StudyCount {
 static StudyCount stCountCache[ST_MAX_SUBJECTS];
 static int stCountCacheUsed = 0;
 
-static char stPool[ST_BUF_BYTES];
+// The note text itself is the only large buffer in the app, and it is taken
+// from the heap when a note is opened and handed back when the app is left.
+// Keeping it out of BSS matters: 16 KB of DRAM is what the Bluetooth stack
+// wants when the music app starts, and Study must not hold it for the rest of
+// the session.  A card that cannot give the full block still works, just with
+// shorter notes - the pool is tried at 16, 8 and 4 KB.
+static char* stPool = nullptr;
+static int stPoolCap = 0;
 static uint16_t stLineOff[ST_MAX_LINES + 1];
 static uint8_t stLineStyle[ST_MAX_LINES];
 static int stLineCount = 0;
@@ -133,6 +143,16 @@ static int stDeckPos = 0;
 static bool stFlipped = false;
 static int stCardScroll = 0;
 static int stCardScrollMax = 0;
+
+// ==========================================
+// CARD WORK GUARD
+// ==========================================
+// Everything the study app does with the card is bookended by a flag in NVS.  A
+// board that resets in the middle of a read leaves the flag set, and the next
+// entry into the app says so and waits for a retry instead of repeating
+// whatever upset it.  Two writes per note are nothing next to the read itself.
+static void studyCardWork(bool active) { prefs.putBool("strisk", active); }
+static bool studyCardWorkPending() { return prefs.getBool("strisk", false); }
 
 // ==========================================
 // SMALL HELPERS
@@ -239,9 +259,12 @@ static void studyReadTitle(const char* path, char* out, int outLen) {
 // name is trusted.  The walk is capped and reports what it hit on the serial
 // port, which is how a card problem is told apart from a firmware one.
 static int studyListDir(const char* dir) {
+  Serial.printf("[I][study] list %s (heap %u)\n", dir, (unsigned)ESP.getFreeHeap());
+  studyCardWork(true);
   File handle = SD.open(dir, FILE_READ);
   if (!handle || !handle.isDirectory()) {
     Serial.printf("[I][study] no folder %s\n", dir);
+    studyCardWork(false);
     return 0;
   }
   int examined = 0;
@@ -279,6 +302,7 @@ static int studyListDir(const char* dir) {
     entry = handle.openNextFile();
   }
   handle.close();
+  studyCardWork(false);
   return stSubjectCount;
 }
 
@@ -403,6 +427,35 @@ void studyRefreshSubjects() {
 // ==========================================
 // LOADING ONE SUBJECT
 // ==========================================
+// Takes the text pool from the heap the first time a note is opened.  Smaller
+// blocks are tried in turn, so a cramped heap costs note length, not the app.
+static bool studyEnsurePool() {
+  if (stPool) return true;
+  const int steps[] = {ST_BUF_BYTES, ST_BUF_BYTES / 2, ST_BUF_BYTES / 4, ST_BUF_BYTES / 8};
+  for (int i = 0; i < 4; i++) {
+    // Leave the Bluetooth stack its room: a smaller pool costs note length and
+    // says so on screen, while a starved heap stops the music app working.
+    if (i < 3 && (int)ESP.getFreeHeap() < steps[i] + ST_HEAP_RESERVE) continue;
+    stPool = (char*)malloc(steps[i]);
+    if (stPool) {
+      stPoolCap = steps[i];
+      Serial.printf("[I][study] pool %d bytes (heap %u)\n", stPoolCap, (unsigned)ESP.getFreeHeap());
+      return true;
+    }
+  }
+  Serial.printf("[W][study] no pool available (heap %u)\n", (unsigned)ESP.getFreeHeap());
+  return false;
+}
+
+int studyPoolBytes() { return stPoolCap; }
+
+static void studyDropPool() {
+  if (stPool) free(stPool);
+  stPool = nullptr;
+  stPoolCap = 0;
+  stPoolUsed = 0;
+}
+
 static void studyResetDocument() {
   stLineCount = 0;
   stNonAsciiDropped = false;
@@ -418,6 +471,10 @@ static void studyResetDocument() {
 }
 
 static void studyAddLine(const char* text, int len, uint8_t style) {
+  if (!stPool) {
+    stTruncated = true;
+    return;
+  }
   if (stLineCount >= ST_MAX_LINES) {
     stTruncated = true;
     return;
@@ -425,13 +482,14 @@ static void studyAddLine(const char* text, int len, uint8_t style) {
   // Only ASCII reaches the panel: the fonts have no other glyphs, so a byte
   // above 0x7F is dropped and reported instead of drawn as garbage.
   char clean[ST_WRAP + 1];
-  int n = studyToAscii(text, len, clean, len + 1, &stNonAsciiDropped);
+  if (len > ST_WRAP) len = ST_WRAP;               // never write past clean[]
+  int n = studyToAscii(text, len, clean, (int)sizeof(clean), &stNonAsciiDropped);
   if (n == 0 && len > 0) {
     // The whole line was non-ASCII (a Sinhala-only heading, say): keep the gap
     // so the page still has a shape.
     if (style == ST_BLANK) return;
   }
-  if (stPoolUsed + n + 1 > ST_BUF_BYTES) {
+  if (stPoolUsed + n + 1 > stPoolCap) {
     stTruncated = true;
     return;
   }
@@ -504,7 +562,7 @@ static void studyWrapLine(const char* text, uint8_t style, int indent, int first
     pos += take;
     while (pos < len && text[pos] == ' ') pos++;
     lineNo++;
-    if (stLineCount >= ST_MAX_LINES || stPoolUsed + ST_WRAP + 1 > ST_BUF_BYTES) {
+    if (stLineCount >= ST_MAX_LINES || stPoolUsed + ST_WRAP + 1 > stPoolCap) {
       stTruncated = true;
       return;
     }
@@ -589,9 +647,15 @@ static bool studyLoadSubject(int index) {
   studyResetDocument();
   stLoaded = false;
   if (index < 0 || index >= stSubjectCount) return false;
+  if (!studyEnsurePool()) return false;
 
+  Serial.printf("[I][study] open %s (heap %u)\n", stSubjects[index].path, (unsigned)ESP.getFreeHeap());
+  studyCardWork(true);
   File f = SD.open(stSubjects[index].path, FILE_READ);
-  if (!f) return false;
+  if (!f) {
+    studyCardWork(false);
+    return false;
+  }
 
   char line[256];
   int n = 0;
@@ -633,6 +697,7 @@ static bool studyLoadSubject(int index) {
     studyHandleRawLine(line);
   }
   f.close();
+  studyCardWork(false);
 
   stLineOff[stLineCount] = (uint16_t)stPoolUsed;
   stLoaded = stLineCount > 0;
@@ -741,13 +806,15 @@ static void drawStudySubjects() {
     tft.setTextSize(1);
     tft.setTextColor(MUTED_COLOR);
     tft.setCursor(16, y + 24);
+    char info[40];
     if (stSubjects[i].counted) {
-      tft.print(String(stSubjects[i].topics) + " topics   " + String(stSubjects[i].cards) + " cards");
+      snprintf(info, sizeof(info), "%u topics   %u cards", (unsigned)stSubjects[i].topics, (unsigned)stSubjects[i].cards);
     } else {
       // Counting topics means reading the note, which is exactly the work to
       // avoid on the way in, so the list shows the size and opens instantly.
-      tft.print(String(stSubjects[i].sizeKB) + " KB   tap to open");
+      snprintf(info, sizeof(info), "%u KB   tap to open", (unsigned)stSubjects[i].sizeKB);
     }
+    tft.print(info);
     // Right hand action: jump straight to the flashcards of this subject.
     drawModernButton(252, y + 5, 54, 24, RADIUS_SM, SURFACE_HI, false);
     printCentered("CARDS", 279, y + 18, NULL, ACCENT_COLOR);
@@ -758,8 +825,10 @@ static void drawStudySubjects() {
   tft.fillRect(0, ST_PAGE_BOTTOM, 320, 240 - ST_PAGE_BOTTOM, BG_COLOR);
   drawModernButton(8, 208, 104, 26, RADIUS_SM, SURFACE_HI, false);
   printCentered("RELOAD", 60, 225, &FreeSans9pt7b, TEXT_COLOR);
-  printRight(stFromCardRoot ? "from card root" : String(stSubjectCount) + (stSubjectCount == 1 ? " subject" : " subjects"),
-             254, 225, NULL, stFromCardRoot ? ACCENT_COLOR : MUTED_COLOR);
+  char footer[24];
+  if (stFromCardRoot) snprintf(footer, sizeof(footer), "from card root");
+  else snprintf(footer, sizeof(footer), "%d subject%s", stSubjectCount, stSubjectCount == 1 ? "" : "s");
+  printRight(footer, 254, 225, NULL, stFromCardRoot ? ACCENT_COLOR : MUTED_COLOR);
   studyDrawScrollChrome(stListScrollMax > 0);
 }
 
@@ -789,8 +858,10 @@ static void drawStudyTopics() {
     tft.setFont(&FreeSans9pt7b);
     tft.setTextColor(i == stTopic ? ACCENT_COLOR : TEXT_COLOR);
     tft.setCursor(16, y + 15);
-    String label = text;
-    if (label.length() > 30) label = label.substring(0, 29) + ".";
+    char label[32];
+    strncpy(label, text, sizeof(label) - 1);
+    label[sizeof(label) - 1] = 0;
+    if (strlen(label) > 30) { label[29] = '.'; label[30] = 0; }
     tft.print(label);
     tft.setFont(NULL);
   }
@@ -859,8 +930,11 @@ static void drawStudyReader() {
     tft.setCursor(8, 205);
     tft.print("non-ASCII text removed - see tools/mkstudy.py");
   } else {
-    String topicName = (topTopic >= 0) ? String(stPool + stLineOff[topTopic]) : String("Start of note");
-    if (topicName.length() > 28) topicName = topicName.substring(0, 27) + ".";
+    char topicName[30];
+    const char* src = (topTopic >= 0) ? (stPool + stLineOff[topTopic]) : "Start of note";
+    strncpy(topicName, src, sizeof(topicName) - 1);
+    topicName[sizeof(topicName) - 1] = 0;
+    if (strlen(topicName) > 28) { topicName[27] = '.'; topicName[28] = 0; }
     tft.setTextColor(MUTED_COLOR);
     tft.setCursor(8, 205);
     tft.print(topicName);
@@ -868,7 +942,9 @@ static void drawStudyReader() {
   int maxScroll = max(1, stContentH - ST_PAGE_H);
   int pct = (int)((float)stScrollY * 100.0f / (float)maxScroll);
   pct = constrain(pct, 0, 100);
-  printRight(String(pct) + "%", 254, 205, NULL, MUTED_COLOR);
+  char pctText[8];
+  snprintf(pctText, sizeof(pctText), "%d%%", pct);
+  printRight(pctText, 254, 205, NULL, MUTED_COLOR);
   drawProgressBar(8, 219, 246, 6, (float)stScrollY / (float)maxScroll, ACCENT_COLOR);
   studyDrawScrollChrome(true);
 }
@@ -902,18 +978,26 @@ static void studyDrawQuestion() {
   int card = stDeckCount ? stDeck[stDeckPos] : 0;
   int len = 0;
   const char* text = studyCardText(card, &len);
-  String q = String(text);
-  String l1 = q, l2 = "";
-  if (q.length() > 26) {
-    int cut = q.lastIndexOf(' ', 26);
-    if (cut < 8) cut = 26;
-    l1 = q.substring(0, cut);
-    l2 = q.substring(cut + (q[cut] == ' ' ? 1 : 0));
-    if (l2.length() > 30) l2 = l2.substring(0, 29) + ".";
+  char l1[28], l2[32];
+  strncpy(l1, text, sizeof(l1) - 1);
+  l1[sizeof(l1) - 1] = 0;
+  l2[0] = 0;
+  if (strlen(text) > 26) {
+    int cut = 26;
+    for (int i = 26; i > 8; i--) {
+      if (text[i] == ' ') { cut = i; break; }
+    }
+    strncpy(l1, text, cut);
+    l1[cut] = 0;
+    const char* rest = text + cut;
+    while (*rest == ' ') rest++;
+    strncpy(l2, rest, sizeof(l2) - 1);
+    l2[sizeof(l2) - 1] = 0;
+    if (strlen(l2) > 30) { l2[29] = '.'; l2[30] = 0; }
   }
-  int y = ST_CARD_Y + (ST_CARD_H / 2) - (l2.length() ? 14 : 4);
+  int y = ST_CARD_Y + (ST_CARD_H / 2) - (l2[0] ? 14 : 4);
   printCentered(l1, 160, y, &FreeSansBold9pt7b, TEXT_COLOR);
-  if (l2.length()) printCentered(l2, 160, y + 18, &FreeSansBold9pt7b, TEXT_COLOR);
+  if (l2[0]) printCentered(l2, 160, y + 18, &FreeSansBold9pt7b, TEXT_COLOR);
   printCentered("tap SHOW ANSWER", 160, ST_CARD_Y + ST_CARD_H - 14, &FreeSans9pt7b, MUTED_COLOR);
 }
 
@@ -959,7 +1043,10 @@ static void drawStudyCards() {
   tft.setTextSize(1);
   tft.setTextColor(MUTED_COLOR);
   tft.setCursor(8, 38);
-  tft.print("CARD " + String(stDeckPos + 1) + " / " + String(stDeckCount) + (stFlipped ? "  -  ANSWER" : "  -  QUESTION"));
+  char counter[40];
+  snprintf(counter, sizeof(counter), "CARD %d / %d  -  %s", stDeckPos + 1, stDeckCount,
+           stFlipped ? "ANSWER" : "QUESTION");
+  tft.print(counter);
   drawCard(ST_CARD_X, ST_CARD_Y, ST_CARD_W, ST_CARD_H, stFlipped, RADIUS_MD);
   if (!stFlipped) studyDrawQuestion();
   else studyDrawAnswer();
@@ -1049,12 +1136,40 @@ static void studyBackToHome() {
 // (or a wake from the screensaver) can never show a half-loaded document.
 // Drawn immediately when the app opens, before the card is touched, so a slow
 // or empty card shows the app responding instead of a blank screen.
+// Shown when the board reset in the middle of a card operation, so the app does
+// not repeat it silently.  The retry is explicit and the log says what happened.
+static void drawStudyCardTrouble() {
+  tft.fillScreen(BG_COLOR);
+  drawScreenHeader("STUDY", true);
+  drawPanel(10, 44, 300, 122, nullptr);
+  printCentered("The card read stopped last time", 160, 70, &FreeSansBold9pt7b, DEL_COLOR);
+  printCentered("Your notes are untouched - the app", 160, 96, &FreeSans9pt7b, MUTED_COLOR);
+  printCentered("just did not finish reading the card.", 160, 112, &FreeSans9pt7b, MUTED_COLOR);
+  printCentered("RETRY lists them again; the serial", 160, 136, &FreeSans9pt7b, MUTED_COLOR);
+  printCentered("log says where it stopped.", 160, 152, &FreeSans9pt7b, MUTED_COLOR);
+  drawModernButton(8, 208, 104, 26, RADIUS_SM, SURFACE_HI, false);
+  printCentered("RETRY", 60, 225, &FreeSans9pt7b, TEXT_COLOR);
+  printRight("card parked", 254, 225, NULL, MUTED_COLOR);
+}
+
 void studyEnterApp() {
+  Serial.printf("[I][study] enter (heap %u)\n", (unsigned)ESP.getFreeHeap());
   currentState = STATE_STUDY;
   stView = STUDY_VIEW_SUBJECTS;
   tft.fillScreen(BG_COLOR);
   drawScreenHeader("STUDY", true);
   printCentered("Reading the card...", 160, 108, &FreeSans9pt7b, MUTED_COLOR);
+  // A finished read clears the flag; a set flag means the previous one never
+  // finished, so say so and wait for a retry instead of repeating it.
+  if (studyCardWorkPending()) {
+    Serial.println("[W][study] previous card read did not finish - waiting for RETRY");
+    studyDropPool();
+    stSubjectCount = 0;                 // nothing has been listed this session
+    stFromCardRoot = false;
+    stLoaded = false;
+    drawStudyCardTrouble();
+    return;
+  }
   studyRefreshSubjects();
   drawStudyScreen(true);
 }
@@ -1069,6 +1184,7 @@ void studyRelease() {
   stDeckPos = 0;
   stCountCacheUsed = 0;
   studyResetDocument();
+  studyDropPool();          // the 16 KB goes back to the heap for the other apps
 }
 
 // ==========================================
