@@ -116,14 +116,19 @@ class Adafruit_GFX : public Print {
     if (!buf || size == 0) return 0;
     std::string s(buf, size);
     if (hasBg) {
+      // Only the built-in font supports a background fill in this firmware, and
+      // it advances 6 px per character at text size 1.
       int16_t w = (int16_t)(s.size() * 6 * textSize);
       int16_t h = (int16_t)(8 * textSize);
       fillRect(cursorX, cursorY, w, h, textBg);
     }
     // The font identity is recorded through its line height, which is what the
-    // renderer needs to pick a matching face.
+    // renderer needs to pick a matching face.  textSize only applies to the
+    // built-in font (Adafruit_GFX ignores it for custom fonts), so it is
+    // recorded as 1 whenever a GFX font is selected.
     HostDraw::add("text " + std::to_string(cursorX) + " " + std::to_string(cursorY) + " " +
-                  std::to_string((int)textSize) + " " + std::to_string(currentFont ? (int)currentFont->yAdvance : 0) +
+                  std::to_string(currentFont ? 1 : (int)textSize) + " " +
+                  std::to_string(currentFont ? (int)currentFont->yAdvance : 0) +
                   " " + hostColor(textColor) + " " + s);
     cursorX += (int16_t)(s.size() * 6 * textSize);
     return size;

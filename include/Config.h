@@ -50,30 +50,34 @@ static const char* const NTP_3 = "pool.ntp.org";
 // ==========================================
 // 2. THEME & COLORS (16-bit 565)
 // ==========================================
-#define BG_COLOR 0x10A3
-#define SURFACE_COLOR 0x18E5
-#define SURFACE_HI 0x2007
-#define SHADOW_COLOR 0x0841
-#define BTN_COLOR 0x18E5
-#define BTN_OUTLINE 0x2967
-#define TEXT_COLOR 0xF7BF
-#define MUTED_COLOR 0x8C74
-#define AXIS_COLOR 0x3A0A
-#define GRID_COLOR 0x2147
-#define PLOT_COLOR 0x3E34
-#define DEL_COLOR 0xFB4D
-#define FUNC_COLOR 0xA37A
-#define VAR_COLOR 0x5C7D
-#define ACCENT_COLOR 0x5C7D
-#define PRESS_COLOR 0x2967
-#define POINT_COLOR 0xFFE0
-
-#define F1_COLOR 0x5C7D
-#define F2_COLOR 0xFCE8
-#define F3_COLOR 0xA37A
-#define F4_COLOR 0x3E34
-#define F5_COLOR 0x07FF
-#define F6_COLOR 0xF81F
+// One coherent dark theme: a near black canvas, two raised surfaces, a single
+// blue accent for "selected/active" and one green for "good/running".  Every
+// screen draws from these names only, so the whole UI can be re-styled from
+// this block.
+#define BG_COLOR       0x1083  // #0D1017  canvas
+#define SURFACE_COLOR  0x18C4  // #161A23  cards
+#define SURFACE_HI     0x2146  // #1F2733  raised cards / pressed
+#define SHADOW_COLOR   0x0841  // #05070C  button drop shadow
+#define BTN_COLOR      0x2146  // #1F2733
+#define BTN_OUTLINE    0x29A8  // #2C3644  hairline borders
+#define TEXT_COLOR     0xE77E  // #EAF0F8  primary text
+#define MUTED_COLOR    0x8CB4  // #8B95A8  secondary text
+#define AXIS_COLOR     0x4AAD  // #46536B  graph axes
+#define GRID_COLOR     0x1926  // #1B2331  graph grid
+#define PLOT_COLOR     0x35F0  // #2FBF87  success / play
+#define DEL_COLOR      0xE249  // #E5484D  destructive
+#define FUNC_COLOR     0x7B7D  // #7C6CF0  function keys
+#define VAR_COLOR      0x4C7F  // #4C8DFF  variables / accent
+#define ACCENT_COLOR   0x4C7F  // #4C8DFF  selection
+#define PRESS_COLOR    0x3A4B  // #3A4759  pressed feedback
+#define POINT_COLOR    0xF524  // #F5A623  plotted points
+// One colour per function slot, chosen to stay apart on the dark canvas.
+#define F1_COLOR       0x4C7F  // #4C8DFF
+#define F2_COLOR       0xFD64  // #FFB020
+#define F3_COLOR       0xE249  // #E5484D
+#define F4_COLOR       0x35F0  // #2FBF87
+#define F5_COLOR       0x265A  // #22C9D8
+#define F6_COLOR       0xB37F  // #B56CFF
 
 #define RADIUS_SM 6
 #define RADIUS_MD 10

@@ -27,6 +27,19 @@ String getTimeString() {
   return s;
 }
 
+// Short local date, e.g. "Wed 24 Sep".  Used by the home status line and the
+// timer reports; falls back to a neutral string when the clock is not set.
+String dateLabelShort() {
+  time_t now;
+  time(&now);
+  struct tm ti;
+  localtime_r(&now, &ti);
+  if ((ti.tm_year + 1900) < 2020) return "clock not set";
+  static const char* const wd[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+  static const char* const mo[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+  return String(wd[ti.tm_wday % 7]) + " " + String(ti.tm_mday) + " " + String(mo[ti.tm_mon % 12]);
+}
+
 bool syncTimeNTP(bool showUI) {
   if (btInitialized) {
     if (showUI) showToast("Restart device to sync time");

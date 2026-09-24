@@ -18,6 +18,7 @@ void applyVolume();
 
 // UI & touch handlers
 void drawMusicScreen(bool fullWipe);
+void drawMusicStatus();  // connection + volume pills
 void handleMusicTouch(bool touched, int sx, int sy);
 void drawMusicList();
 void handleMusicListTouch(bool touched, int sx, int sy);

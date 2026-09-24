@@ -16,7 +16,7 @@ void drawSettingsScreen();
 static const int CAL_INSET = 24;
 static const int CAL_STEP_COUNT = 4;
 static const int CAL_CANCEL_X = 96;
-static const int CAL_CANCEL_Y = 186;
+static const int CAL_CANCEL_Y = 190;
 static const int CAL_CANCEL_W = 128;
 static const int CAL_CANCEL_H = 34;
 
@@ -44,29 +44,31 @@ void drawCalibrationScreen() {
   // corners stay completely clear for the targets (that is also what makes the
   // screen instantly recognisable as a calibration step).
   tft.fillScreen(BG_COLOR);
-  printCentered("TOUCH CALIBRATION", 160, 94, &FreeSansBold9pt7b, TEXT_COLOR);
+  // A card in the middle keeps the four corners free for the targets while the
+  // instructions stay readable (the copy is short enough for 320 px).
+  drawCard(60, 74, 200, 92, false, RADIUS_MD);
+  printCentered("TOUCH CALIBRATION", 160, 96, &FreeSansBold9pt7b, TEXT_COLOR);
   printCentered(String("Step ") + String(calibStep + 1) + " of " + String(CAL_STEP_COUNT),
                 160, 116, &FreeSans9pt7b, MUTED_COLOR);
-  printCentered("Touch the middle of the orange target", 160, 138, &FreeSans9pt7b, MUTED_COLOR);
-  printCentered(String("Target: ") + CAL_NAMES[calibStep], 160, 160, &FreeSansBold9pt7b, ACCENT_COLOR);
+  printCentered(String("Tap the ") + CAL_NAMES[calibStep] + " target", 160, 136, &FreeSans9pt7b, TEXT_COLOR);
+  printCentered("Hold the screen steady", 160, 154, NULL, MUTED_COLOR);
 
   // Progress dots so the user knows how much is left.
   int spacing = 26;
   int startX = 160 - ((CAL_STEP_COUNT - 1) * spacing) / 2;
   for (int i = 0; i < CAL_STEP_COUNT; i++) {
     int cx = startX + (i * spacing);
-    if (i < calibStep) tft.fillCircle(cx, 176, 5, PLOT_COLOR);
-    else if (i == calibStep) tft.fillCircle(cx, 176, 5, DEL_COLOR);
-    else tft.drawCircle(cx, 176, 5, SURFACE_HI);
+    if (i < calibStep) tft.fillCircle(cx, 176, 4, PLOT_COLOR);
+    else if (i == calibStep) tft.fillCircle(cx, 176, 4, ACCENT_COLOR);
+    else tft.drawCircle(cx, 176, 4, BTN_OUTLINE);
   }
 
   int tx, ty;
   calTargetXY(calibStep, tx, ty);
-  drawCrosshairTarget(tx, ty, 10, DEL_COLOR);
+  drawCrosshairTarget(tx, ty, 10, POINT_COLOR);
 
-  drawModernButton(CAL_CANCEL_X, CAL_CANCEL_Y, CAL_CANCEL_W, CAL_CANCEL_H, RADIUS_MD, SURFACE_HI, true);
-  printCentered("CANCEL", CAL_CANCEL_X + (CAL_CANCEL_W / 2), CAL_CANCEL_Y + 23, &FreeSansBold9pt7b, TEXT_COLOR);
-  printCentered("CANCEL keeps the current calibration", 160, 236, NULL, MUTED_COLOR);
+  drawModernButton(CAL_CANCEL_X, CAL_CANCEL_Y, CAL_CANCEL_W, CAL_CANCEL_H, RADIUS_MD, SURFACE_HI, false);
+  printCentered("CANCEL", CAL_CANCEL_X + (CAL_CANCEL_W / 2), CAL_CANCEL_Y + 23, &FreeSans9pt7b, TEXT_COLOR);
 }
 
 // ==========================================

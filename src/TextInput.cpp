@@ -34,24 +34,35 @@ static void drawTextKey(int row, int col) {
   String label = String(textKeyAt(row, col));
   int x = (col * TXT_COL_W) + 2, y = TXT_ROW_Y + (row * TXT_ROW_H) + 2;
   uint16_t bg = SURFACE_COLOR;
-  if (label == "DEL") bg = DEL_COLOR;
-  else if (label == "OK") bg = PLOT_COLOR;
-  else if (label == "abc" || label == "123") bg = FUNC_COLOR;
-  else if (label == "SP") bg = SURFACE_HI;
+  uint16_t fg = TEXT_COLOR;
+  if (label == "DEL") {
+    bg = SURFACE_HI;
+    fg = DEL_COLOR;
+  } else if (label == "OK") {
+    bg = PLOT_COLOR;
+    fg = BG_COLOR;
+  } else if (label == "abc" || label == "123") {
+    bg = SURFACE_HI;
+    fg = ACCENT_COLOR;
+  } else if (label == "SP") {
+    bg = SURFACE_HI;
+    fg = MUTED_COLOR;
+  }
   drawModernButton(x, y, 49, TXT_KEY_H, RADIUS_SM, bg, false);
-  tft.setTextColor(TEXT_COLOR);
+  tft.setTextColor(fg);
+  // Labels are centred in the 49 px cap (size 1 = 6 px per cell, size 2 = 12).
   if (label == "SP") {
     tft.setTextSize(1);
-    tft.setCursor(x + 10, y + 11);
+    tft.setCursor(x + (49 - 30) / 2, y + 11);
     tft.print("SPACE");
     return;
   }
   if (label.length() > 1) {
     tft.setTextSize(1);
-    tft.setCursor(x + 10, y + 11);
+    tft.setCursor(x + max(3, (49 - (int)label.length() * 6) / 2), y + 11);
   } else {
     tft.setTextSize(2);
-    tft.setCursor(x + 18, y + 6);
+    tft.setCursor(x + (49 - 12) / 2, y + 6);
   }
   tft.print(label);
 }
@@ -82,13 +93,14 @@ void drawTextKeyboardScreen(bool fullWipe) {
   if (fullWipe) {
     tft.fillScreen(BG_COLOR);
     tft.fillRect(0, 0, 320, TXT_BAR_H, SURFACE_COLOR);
-    drawModernButton(0, 0, 40, TXT_BAR_H, 0, DEL_COLOR, false);
-    drawBackChevron(20, 17, TEXT_COLOR);
+    tft.drawFastHLine(0, TXT_BAR_H - 1, 320, BTN_OUTLINE);
+    drawModernButton(6, 5, 34, TXT_BAR_H - 10, RADIUS_SM, SURFACE_HI, false);
+    drawBackChevron(23, 17, TEXT_COLOR);
     printCentered(textInputTitle, 148, 22, &FreeSansBold9pt7b, TEXT_COLOR);
-    drawModernButton(232, 3, 46, TXT_BAR_H - 6, RADIUS_SM, FUNC_COLOR, false);
-    printCentered(textKbNumeric ? "abc" : "123", 255, 21, &FreeSans9pt7b, TEXT_COLOR);
-    drawModernButton(282, 3, 36, TXT_BAR_H - 6, RADIUS_SM, PLOT_COLOR, false);
-    printCentered("OK", 300, 21, &FreeSans9pt7b, TEXT_COLOR);
+    drawModernButton(232, 5, 46, TXT_BAR_H - 10, RADIUS_SM, SURFACE_HI, false);
+    printCentered(textKbNumeric ? "ABC" : "123", 255, 21, &FreeSans9pt7b, TEXT_COLOR);
+    drawModernButton(282, 5, 36, TXT_BAR_H - 10, RADIUS_SM, PLOT_COLOR, false);
+    printCentered("OK", 300, 21, &FreeSans9pt7b, BG_COLOR);
     for (int r = 0; r < 5; r++)
       for (int c = 0; c < 6; c++) drawTextKey(r, c);
   }
@@ -143,20 +155,20 @@ static bool commitTextInput() {
 void handleTextKeyboardTouch(bool touched, int sx, int sy) {
   if (!touched) return;
   if (inRect(sx, sy, 0, 0, 40, TXT_BAR_H)) {  // back = cancel
-    flashButton(0, 0, 40, TXT_BAR_H, 0);
+    flashButton(6, 5, 34, TXT_BAR_H - 10, RADIUS_SM);
     cancelTextInput();
     waitTouchRelease();
     return;
   }
   if (inRect(sx, sy, 232, 3, 46, TXT_BAR_H - 6)) {
-    flashButton(232, 3, 46, TXT_BAR_H - 6, RADIUS_SM);
+    flashButton(232, 5, 46, TXT_BAR_H - 10, RADIUS_SM);
     textKbNumeric = !textKbNumeric;
     drawTextKeyboardScreen(true);
     waitTouchRelease();
     return;
   }
   if (inRect(sx, sy, 282, 3, 36, TXT_BAR_H - 6)) {
-    flashButton(282, 3, 36, TXT_BAR_H - 6, RADIUS_SM);
+    flashButton(282, 5, 36, TXT_BAR_H - 10, RADIUS_SM);
     commitTextInput();
     waitTouchRelease();
     return;

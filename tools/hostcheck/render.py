@@ -18,14 +18,16 @@ from PIL import Image, ImageDraw, ImageFont
 HERE = os.path.dirname(os.path.abspath(__file__))
 W, H, SCALE = 320, 240, 2
 
-# The panel fonts are not available on the host, so each recorded line height
-# is mapped to the closest DejaVu face.
+# The panel fonts are not available on the host, so each recorded line height is
+# mapped to the closest DejaVu face.  The point sizes are tuned so the advance
+# per character matches the real FreeSans metrics, which keeps the preview
+# honest about what fits on the 320 px panel.
 FACE_BY_HEIGHT = {
-    0: (10, False),   # built-in 5x7 bitmap font
-    14: (13, False),  # FreeSans9pt / FreeSansBold9pt
-    18: (16, False),  # FreeSans12pt
-    25: (23, False),  # FreeSansBold18pt
-    33: (30, True),   # FreeSansBold24pt
+    0: (9, False),    # built-in 5x7 bitmap font (6 px advance at size 1)
+    14: (10, False),  # FreeSans9pt / FreeSansBold9pt
+    18: (12, False),  # FreeSans12pt
+    25: (17, False),  # FreeSansBold18pt
+    33: (22, True),   # FreeSansBold24pt
 }
 FONT_CACHE = {}
 

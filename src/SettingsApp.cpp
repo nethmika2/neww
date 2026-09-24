@@ -38,11 +38,7 @@ static void drawToggleCard(int x, int y, const char* title, const char* const* l
 
 void drawSettingsScreen() {
   tft.fillScreen(BG_COLOR);
-  tft.fillRect(0, 0, 320, 30, SURFACE_COLOR);
-  drawModernButton(0, 0, 40, 30, 0, DEL_COLOR, false);
-  drawBackChevron(20, 15, TEXT_COLOR);
-  printCentered("SETTINGS", 160, 20, &FreeSansBold9pt7b, TEXT_COLOR);
-  tft.drawFastHLine(0, 30, 320, BTN_OUTLINE);
+  drawScreenHeader("SETTINGS", true);
 
   static const char* const axisLabels[2] = { "NUM", "PI" };
   static const char* const idleLabels[2] = { "CLOCK", "OFF" };
@@ -51,15 +47,15 @@ void drawSettingsScreen() {
   drawToggleCard(COL_L, ROW_1, "X AXIS", axisLabels, xAxisPi ? 1 : 0);
   drawToggleCard(COL_R, ROW_1, "Y AXIS", axisLabels, yAxisPi ? 1 : 0);
   drawToggleCard(COL_L, ROW_2, "IDLE SCREEN", idleLabels, screensaverEnabled ? 0 : 1);
-  // The counter next to the earbud switch is a live diagnostic: it moves as
-  // soon as the buds send anything, so a hardware problem can be told apart
-  // from a settings problem without a serial monitor.
-  String budTitle = String("EARBUD BUTTONS ") + String(earbudEventCount());
-  drawToggleCard(COL_R, ROW_2, budTitle.c_str(), budLabels, earbudControlsEnabled() ? 0 : 1);
+  drawToggleCard(COL_R, ROW_2, "EARBUDS", budLabels, earbudControlsEnabled() ? 0 : 1);
+  // The counter is a live diagnostic: it moves as soon as the buds send
+  // anything, so a hardware problem can be told apart from a settings problem
+  // without a serial monitor.
+  printRight("seen " + String(earbudEventCount()), COL_R + CARD_W - 12, ROW_2 + 13, NULL, MUTED_COLOR);
 
   // Clock card: the time is the headline, the four buttons are the actions.
   drawCard(CLOCK_CARD_X, CLOCK_CARD_Y, CLOCK_CARD_W, CLOCK_CARD_H, false, RADIUS_MD);
-  drawSectionLabel(timeSynced ? "CLOCK (SYNCED)" : "CLOCK (NOT SYNCED)", CLOCK_CARD_X + 10, CLOCK_CARD_Y + 18);
+  drawSectionLabel(timeSynced ? "CLOCK - SYNCED" : "CLOCK - NOT SYNCED", CLOCK_CARD_X + 10, CLOCK_CARD_Y + 14);
   printCentered(getTimeString(), 262, CLOCK_CARD_Y + 24, &FreeSansBold18pt7b, timeSynced ? TEXT_COLOR : MUTED_COLOR);
 
   int btnX = CLOCK_CARD_X + 6;
@@ -70,18 +66,18 @@ void drawSettingsScreen() {
   drawModernButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM, PLOT_COLOR, false);
   printCentered("SYNC", btnX + (CLOCK_BTN_W / 2), CLOCK_BTN_Y + 20, &FreeSans9pt7b, TEXT_COLOR);
   btnX += CLOCK_BTN_W + gap;
-  drawModernButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM, autoSyncBoot ? ACCENT_COLOR : SURFACE_COLOR, false);
-  printCentered(autoSyncBoot ? "AUTO ON" : "AUTO OFF", btnX + (CLOCK_BTN_W / 2), CLOCK_BTN_Y + 20, &FreeSans9pt7b, TEXT_COLOR);
+  drawModernButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM, autoSyncBoot ? ACCENT_COLOR : SURFACE_HI, false);
+  printCentered(autoSyncBoot ? "AUTO ON" : "AUTO OFF", btnX + (CLOCK_BTN_W / 2), CLOCK_BTN_Y + 20, &FreeSans9pt7b, autoSyncBoot ? BG_COLOR : TEXT_COLOR);
   btnX += CLOCK_BTN_W + gap;
-  drawModernButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM, F2_COLOR, false);
-  printCentered("CALIB", btnX + (CLOCK_BTN_W / 2), CLOCK_BTN_Y + 20, &FreeSans9pt7b, BG_COLOR);
+  drawModernButton(btnX, CLOCK_BTN_Y, CLOCK_BTN_W, CLOCK_BTN_H, RADIUS_SM, SURFACE_HI, false);
+  printCentered("TOUCH CAL", btnX + (CLOCK_BTN_W / 2), CLOCK_BTN_Y + 20, &FreeSans9pt7b, TEXT_COLOR);
 }
 
 void handleSettingsTouch(bool touched, int sx, int sy) {
   if (!touched) return;
   waitTouchRelease();
   if (inRect(sx, sy, 0, 0, 40, 30)) {
-    flashButton(0, 0, 40, 30, 0);
+    flashButton(6, 3, 34, 24, RADIUS_SM);
     currentState = STATE_HOME;
     drawHomeScreen();
     return;

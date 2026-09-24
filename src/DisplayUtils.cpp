@@ -127,6 +127,39 @@ void drawModernButton(int x, int y, int w, int h, int r, uint16_t bg, bool shado
 // ==========================================
 // SHARED LAYOUT PIECES
 // ==========================================
+// Every app screen starts with the same 30 px title bar: a hairline at the
+// bottom, an optional back chevron on the left and the title centred.  Keeping
+// it in one place is what makes the screens look like parts of one product.
+void drawScreenHeader(const char* title, bool showBack) {
+  tft.fillRect(0, 0, 320, 30, SURFACE_COLOR);
+  tft.drawFastHLine(0, 30, 320, BTN_OUTLINE);
+  if (showBack) {
+    drawModernButton(6, 3, 34, 24, RADIUS_SM, SURFACE_HI, false);
+    drawBackChevron(23, 15, TEXT_COLOR);
+  }
+  if (title && title[0]) printCentered(title, 160, 20, &FreeSansBold9pt7b, TEXT_COLOR);
+}
+
+// A square tile used for the home screen and for icon buttons: a faint tint of
+// the accent colour instead of a saturated fill, which keeps the icons legible
+// while the canvas stays calm.
+void drawIconTile(int x, int y, int w, int h, int radius, uint16_t tint) {
+  tft.fillRoundRect(x, y, w, h, radius, SURFACE_COLOR);
+  tft.drawRoundRect(x, y, w, h, radius, brighten565(tint, -3));
+}
+
+// Status pill: "connected", "searching", a counter.  Small, quiet, aligned.
+void drawStatusPill(int x, int y, int w, const char* text, uint16_t dotColor, uint16_t textColor) {
+  int h = 18;
+  tft.fillRoundRect(x, y, w, h, h / 2, SURFACE_COLOR);
+  tft.drawRoundRect(x, y, w, h, h / 2, BTN_OUTLINE);
+  if (dotColor) tft.fillCircle(x + 11, y + (h / 2), 3, dotColor);
+  tft.setTextSize(1);
+  tft.setTextColor(textColor);
+  tft.setCursor(x + (dotColor ? 20 : 10), y + 6);
+  tft.print(text);
+}
+
 void drawCard(int x, int y, int w, int h, bool active, int radius) {
   tft.fillRoundRect(x, y, w, h, radius, active ? SURFACE_HI : SURFACE_COLOR);
   tft.drawRoundRect(x, y, w, h, radius, active ? ACCENT_COLOR : BTN_OUTLINE);
@@ -151,7 +184,10 @@ void drawSegmentedControl(int x, int y, int w, int h, const char* const* labels,
     int sx = x + 2 + (i * segW);
     int sw = (i == count - 1) ? (x + w - 2 - sx) : segW;
     bool active = (i == activeIndex);
-    if (active) tft.fillRoundRect(sx, y + 2, sw, h - 4, (h - 4) / 2, ACCENT_COLOR);
+    if (active) {
+      tft.fillRoundRect(sx, y + 2, sw, h - 4, (h - 4) / 2, ACCENT_COLOR);
+      tft.drawRoundRect(sx, y + 2, sw, h - 4, (h - 4) / 2, brighten565(ACCENT_COLOR, 4));
+    }
     printCentered(labels[i], sx + (sw / 2), y + (h / 2) + 6, &FreeSansBold9pt7b, active ? BG_COLOR : MUTED_COLOR);
   }
 }
@@ -178,9 +214,13 @@ void flashButton(int x, int y, int w, int h, int r) {
   delay(35);
 }
 
+// Announcement that paints over the middle of the screen for a moment.  A
+// neutral card with an accent edge reads as information, not as an error.
 void showToast(String msg) {
-  drawModernButton(20, 90, 280, 40, RADIUS_MD, DEL_COLOR, true);
-  printCentered(msg, 160, 115, &FreeSans9pt7b, TEXT_COLOR);
+  tft.fillRoundRect(22, 92, 276, 40, RADIUS_MD, SURFACE_HI);
+  tft.drawRoundRect(22, 92, 276, 40, RADIUS_MD, BTN_OUTLINE);
+  tft.fillRoundRect(22, 92, 4, 40, 2, ACCENT_COLOR);
+  printCentered(msg, 162, 117, &FreeSans9pt7b, TEXT_COLOR);
   delay(900);
 }
 

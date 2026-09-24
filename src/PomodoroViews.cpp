@@ -124,7 +124,7 @@ static int pomoStreakDays() {
 static const int TASK_ROW_X = 8;
 static const int TASK_ROW_W = 304;
 static const int TASK_ROW_H = 26;
-static const int TASK_HINT_H = 10;
+static const int TASK_HINT_H = 12;
 static const int TASK_ACT_X = 8;
 static const int TASK_ACT_Y = 206;
 static const int TASK_ACT_H = 32;
@@ -173,8 +173,8 @@ static void drawPomoTaskRow(int i, int y) {
   drawModernButton(plusX, y + 4, 20, 18, 4, SURFACE_HI, false);
   drawPlusIcon(plusX + 10, y + 13, TEXT_COLOR);
 
-  drawModernButton(delX, y + 4, 30, 18, 4, DEL_COLOR, false);
-  printCentered("X", delX + 15, y + 9, NULL, TEXT_COLOR);
+  drawModernButton(delX, y + 4, 30, 18, 4, SURFACE_HI, false);
+  drawMinusIcon(delX + 15, y + 13, DEL_COLOR);
 }
 
 void drawPomoTasksView() {
@@ -325,8 +325,8 @@ static void drawPomoPresetRow(int i, int y) {
   tft.setTextColor(MUTED_COLOR);
   tft.setCursor(170, y + 6);
   tft.print(pomoTemplateSummary(t));
-  drawModernButton(284, y + 2, 24, 16, 3, DEL_COLOR, false);
-  printCentered("X", 296, y + 6, NULL, TEXT_COLOR);
+  drawModernButton(284, y + 2, 24, 16, 3, SURFACE_HI, false);
+  drawMinusIcon(296, y + 10, DEL_COLOR);
 }
 
 void drawPomoPresetsView() {
@@ -490,24 +490,25 @@ static void drawDayReport() {
   int blocks = pomoStatBlocks(today);
   int streak = pomoStreakDays();
 
-  printCentered(pomoDateLabel(today), 160, 78, &FreeSans9pt7b, MUTED_COLOR);
-  printCentered(pomoFormatMinutes(minutes), 160, 108, &FreeSansBold24pt7b, minutes > 0 ? TEXT_COLOR : MUTED_COLOR);
+  printCentered(pomoDateLabel(today), 160, 72, &FreeSans9pt7b, MUTED_COLOR);
+  printCentered(pomoFormatMinutes(minutes), 160, 102, &FreeSansBold24pt7b, minutes > 0 ? TEXT_COLOR : MUTED_COLOR);
   String sub = String(blocks) + " block" + (blocks == 1 ? "" : "s") + "   -   streak " + String(streak) + "d";
-  printCentered(sub, 160, 128, &FreeSans9pt7b, MUTED_COLOR);
+  printCentered(sub, 160, 122, &FreeSans9pt7b, MUTED_COLOR);
 
   // Daily goal: a progress bar with the steppers that change the target.
   int goal = constrain(pomoDailyGoal, MIN_DAILY_GOAL, MAX_DAILY_GOAL);
   float pct = constrain((float)blocks / (float)goal, 0.0f, 1.0f);
   bool reached = blocks >= goal;
-  drawProgressBar(20, 134, 280, 14, pct, reached ? PLOT_COLOR : ACCENT_COLOR);
-  drawModernButton(20, 154, 46, 28, RADIUS_SM, SURFACE_HI, false);
-  drawMinusIcon(43, 168, TEXT_COLOR);
-  drawModernButton(254, 154, 46, 28, RADIUS_SM, SURFACE_HI, false);
-  drawPlusIcon(277, 168, TEXT_COLOR);
-  printCentered("GOAL " + String(goal) + " BLOCKS" + (reached ? " DONE" : ""), 160, 173, &FreeSans9pt7b, reached ? PLOT_COLOR : TEXT_COLOR);
+  drawProgressBar(20, 132, 280, 12, pct, reached ? PLOT_COLOR : ACCENT_COLOR);
+  // Goal row: stepper, label and stepper on one shared baseline.
+  drawModernButton(60, 150, 44, 26, RADIUS_SM, SURFACE_HI, false);
+  drawMinusIcon(82, 163, TEXT_COLOR);
+  printCentered("GOAL " + String(goal) + " BLOCKS" + (reached ? " DONE" : ""), 160, 166, &FreeSans9pt7b, reached ? PLOT_COLOR : MUTED_COLOR);
+  drawModernButton(216, 150, 44, 26, RADIUS_SM, SURFACE_HI, false);
+  drawPlusIcon(238, 163, TEXT_COLOR);
 
   // Hour by hour distribution of today's focus time.
-  drawSectionLabel("FOCUS BY HOUR", 10, 198);
+  drawSectionLabel("FOCUS BY HOUR", 10, 182);
   int maxH = 0;
   for (int h = 0; h < 24; h++) maxH = max(maxH, (int)pomoHourly[h]);
   int scale = chartScale(maxH);
@@ -515,11 +516,11 @@ static void drawDayReport() {
     int x = 16 + (h * 12);
     int barH = (int)(((float)pomoHourly[h] / scale) * 22.0f);
     if (pomoHourly[h] > 0) barH = max(barH, 2);
-    tft.fillRect(x, 228 - barH, 9, barH, pomoHourly[h] > 0 ? ACCENT_COLOR : SURFACE_COLOR);
+    tft.fillRect(x, 226 - barH, 9, barH, pomoHourly[h] > 0 ? ACCENT_COLOR : SURFACE_COLOR);
     if (h % 6 == 0) {
       tft.setTextSize(1);
       tft.setTextColor(MUTED_COLOR);
-      tft.setCursor(x, 230);
+      tft.setCursor(x, 228);
       tft.print(String(h));
     }
   }
@@ -636,15 +637,15 @@ void handlePomoStatsTouch(int sx, int sy) {
     return;
   }
   if (statsTab != STATS_DAY) return;
-  if (inRect(sx, sy, 20, 154, 46, 28)) {
-    flashButton(20, 154, 46, 28, RADIUS_SM);
+  if (inRect(sx, sy, 60, 150, 44, 26)) {
+    flashButton(60, 150, 44, 26, RADIUS_SM);
     pomoDailyGoal = constrain(pomoDailyGoal - 1, MIN_DAILY_GOAL, MAX_DAILY_GOAL);
     savePomoSettings();
     drawPomoStatsView();
     return;
   }
-  if (inRect(sx, sy, 254, 154, 46, 28)) {
-    flashButton(254, 154, 46, 28, RADIUS_SM);
+  if (inRect(sx, sy, 216, 150, 44, 26)) {
+    flashButton(216, 150, 44, 26, RADIUS_SM);
     pomoDailyGoal = constrain(pomoDailyGoal + 1, MIN_DAILY_GOAL, MAX_DAILY_GOAL);
     savePomoSettings();
     drawPomoStatsView();

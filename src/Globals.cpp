@@ -172,10 +172,14 @@ const char* point_keys[5][6] = {
 // own (see sliders[] / vars[]), so a point can be placed at (2m, c+1) and then
 // follow those sliders.  x/y/t are intentionally absent - they are the plot
 // cursor, not user parameters.
+// The parameter letters of the point keyboard, in QWERTY reading order
+// (q, e, p, a, k, c, b, n, m) so the page reads like a normal keyboard instead
+// of an alphabetical list.  Only the letters that are real graph parameters
+// appear here; the math keys keep the positions the user already knows.
 const char* point_alpha_keys[5][6] = {
-  { "a", "b", "c", "k", "123", "DEL" },
-  { "m", "n", "p", "q", "(", "AC" },
-  { "e", "pi", "+", "-", ")", "BACK" },
+  { "q", "e", "p", "a", "123", "DEL" },
+  { "k", "c", "b", "n", "(", "AC" },
+  { "m", "pi", "+", "-", ")", "BACK" },
   { "*", "/", "^", ",", "UNDO", "CLR" },
   { "<-", "->", "1", "2", "3", "ADD" }
 };

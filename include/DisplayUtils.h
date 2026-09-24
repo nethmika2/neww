@@ -27,6 +27,9 @@ String formatTime(uint32_t totalSeconds);
 // progress bar so the screens line up with each other and with the 8 px margin
 // grid.  They are drawn with the same handful of primitives the old ad-hoc
 // buttons used, so nothing here costs extra frames.
+void drawScreenHeader(const char* title, bool showBack);
+void drawIconTile(int x, int y, int w, int h, int radius, uint16_t tint);
+void drawStatusPill(int x, int y, int w, const char* text, uint16_t dotColor, uint16_t textColor);
 void drawCard(int x, int y, int w, int h, bool active, int radius);
 void drawSectionLabel(const char* text, int x, int y);
 void drawSegmentedControl(int x, int y, int w, int h, const char* const* labels, int count, int activeIndex);

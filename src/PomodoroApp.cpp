@@ -41,10 +41,12 @@ String pomoModeTitle() {
   return "WORK SESSION";
 }
 
+// Focus is the accent colour, breaks are green/violet.  Red is reserved for
+// destructive controls, so the ring never suggests something went wrong.
 uint16_t pomoModeColor() {
   if (pomoMode == MODE_SHORT_BREAK) return FUNC_COLOR;
   if (pomoMode == MODE_LONG_BREAK) return PLOT_COLOR;
-  return DEL_COLOR;
+  return ACCENT_COLOR;
 }
 
 // ==========================================
@@ -52,8 +54,8 @@ uint16_t pomoModeColor() {
 // ==========================================
 void drawPomoTopBar() {
   tft.fillRect(0, 0, 320, POMO_TAB_H, SURFACE_COLOR);
-  drawModernButton(0, 0, 40, POMO_TAB_H, 0, DEL_COLOR, false);
-  drawBackChevron(20, POMO_TAB_H / 2, TEXT_COLOR);
+  drawModernButton(6, 3, 34, POMO_TAB_H - 6, RADIUS_SM, SURFACE_HI, false);
+  drawBackChevron(23, POMO_TAB_H / 2, TEXT_COLOR);
   for (int i = 0; i < POMO_VIEW_COUNT; i++) {
     int x = POMO_TAB_X + (i * POMO_TAB_W);
     bool active = ((int)pomoView == i);
@@ -164,8 +166,11 @@ void drawPomoProgressDots() {
   int startX = POMO_DOTS_CX - ((n - 1) * spacing) / 2;
   for (int i = 0; i < n; i++) {
     int cx = startX + (i * spacing);
-    if (i < pomodorosCompleted) tft.fillCircle(cx, POMO_DOTS_CY, 4, DEL_COLOR);
-    else tft.drawCircle(cx, POMO_DOTS_CY, 4, SURFACE_HI);
+    if (i < pomodorosCompleted) tft.fillCircle(cx, POMO_DOTS_CY, 4, ACCENT_COLOR);
+    else {
+      tft.drawCircle(cx, POMO_DOTS_CY, 4, BTN_OUTLINE);
+      tft.drawCircle(cx, POMO_DOTS_CY, 3, BTN_OUTLINE);
+    }
   }
   // The label makes it obvious that the dots belong to the current cycle.
   printCentered(String(pomodorosCompleted) + "/" + String(n), POMO_DOTS_CX, POMO_DOTS_CY + 20, NULL, MUTED_COLOR);
@@ -177,7 +182,7 @@ void drawPomoTaskChip() {
   // and the progress of the day.
   int goal = constrain(pomoDailyGoal, MIN_DAILY_GOAL, MAX_DAILY_GOAL);
   int done = pomoStatBlocks(pomoTodayDay());
-  String goalText = String(min(done, goal)) + "/" + String(goal);
+  String goalText = String(min(done, goal)) + "/" + String(goal) + " today";
   tft.setTextSize(1);
   tft.setTextColor(done >= goal ? PLOT_COLOR : MUTED_COLOR);
   tft.setCursor(POMO_CHIP_X + POMO_CHIP_W - 8 - (goalText.length() * 6), POMO_CHIP_Y + 8);
@@ -383,7 +388,7 @@ void handlePomodoroTouch(bool touched, int sx, int sy) {
   waitTouchRelease();
   if (sy < POMO_TAB_H) {
     if (sx < POMO_TAB_X) {
-      flashButton(0, 0, 40, POMO_TAB_H, 0);
+      flashButton(6, 3, 34, POMO_TAB_H - 6, RADIUS_SM);
       currentState = STATE_HOME;
       drawHomeScreen();
       return;

@@ -258,7 +258,7 @@ static void testScrolling() {
   // Fill the list: the page now continues below the fold.
   for (int i = 0; i < MAX_POMO_TASKS - 1; i++) addPomoTask("Task");
   drawPomodoroScreen(true);
-  int contentH = 10 + MAX_POMO_TASKS * 26;
+  int contentH = 12 + MAX_POMO_TASKS * 26;  // hint line + one row per task
   CHECK_EQ(pomoScrollMax, contentH - (204 - 32));
   CHECK(pomoScrollMax > 0);
   CHECK_EQ(pomoScrollY, 0);

@@ -13,12 +13,26 @@ void drawSingleKey(int r, int c, const char* keys[5][6]) {
   int x = (c * 53) + 2, y = (40 + (r * 40)) + 2;
   String keyStr = String(keys[r][c]);
   if (keyStr == " ") return;
+  // The same key cap rule as the text keyboard: quiet surfaces for input keys,
+  // one accent for the primary action, red only for the destructive one.
   uint16_t btn_bg = SURFACE_COLOR;
-  if (keyStr == "PLOT" || keyStr == "ADD") btn_bg = PLOT_COLOR;
-  else if (keyStr == "DEL" || keyStr == "AC") btn_bg = DEL_COLOR;
-  else if (keyStr == "FUNC" || keyStr == "BACK" || keyStr == "UNDO" || keyStr == "CLR" || keyStr == "VAR") btn_bg = FUNC_COLOR;
+  uint16_t keyColor = TEXT_COLOR;
+  if (keyStr == "PLOT" || keyStr == "ADD") {
+    btn_bg = PLOT_COLOR;
+    keyColor = BG_COLOR;
+  } else if (keyStr == "DEL" || keyStr == "AC") {
+    btn_bg = SURFACE_HI;
+    keyColor = DEL_COLOR;
+  } else if (keyStr == "FUNC" || keyStr == "BACK" || keyStr == "UNDO" || keyStr == "CLR" || keyStr == "VAR") {
+    btn_bg = SURFACE_HI;
+    keyColor = ACCENT_COLOR;
+  } else if (keyStr == "123" || keyStr == "ABC") {
+    btn_bg = SURFACE_HI;
+    keyColor = ACCENT_COLOR;
+  }
+  if (btn_bg == SURFACE_COLOR && isVarChar(keyStr[0]) && keyStr.length() == 1) keyColor = VAR_COLOR;
   drawModernButton(x, y, 49, 36, RADIUS_SM, btn_bg, false);
-  uint16_t txtColor = isVarChar(keyStr[0]) && keyStr.length() == 1 ? VAR_COLOR : TEXT_COLOR;
+  uint16_t txtColor = keyColor;
   tft.setTextColor(txtColor);
   if (keyStr == "sqrt()") {
     int gx = x + 4, gy = y + 10;
@@ -30,12 +44,17 @@ void drawSingleKey(int r, int c, const char* keys[5][6]) {
     tft.drawFastHLine(gx + w - 1, gy + 1, 26, txtColor);
     return;
   }
+  // Centre the label in the 49 px cap: one character at text size 2 (12 px per
+  // cell), longer labels at size 1 (6 px per cell).  Centring keeps the board
+  // tidy and stops wide labels from running off the right hand keys.
   if (keyStr.length() >= 4) {
     tft.setTextSize(1);
-    tft.setCursor(x + 5, y + 14);
+    int w = keyStr.length() * 6;
+    tft.setCursor(x + max(3, (49 - w) / 2), y + 14);
   } else {
     tft.setTextSize(2);
-    tft.setCursor(x + 10, y + 11);
+    int w = keyStr.length() * 12;
+    tft.setCursor(x + max(2, (49 - w) / 2), y + 11);
   }
   tft.print(keyStr);
 }
@@ -185,7 +204,7 @@ void drawPointKeyboardScreen() {
 }
 
 void updatePointInputBox() {
-  tft.fillRect(0, 0, 320, 40, BG_COLOR);
+  tft.fillRect(0, 0, 320, 40, SURFACE_COLOR);
   tft.fillRect(0, 0, 320, 3, pointKbAlpha ? VAR_COLOR : POINT_COLOR);
   tft.drawFastHLine(0, 39, 320, BTN_OUTLINE);
   tft.setTextSize(2);
@@ -222,7 +241,7 @@ void updatePointInputBox() {
       previewColor = live ? VAR_COLOR : ACCENT_COLOR;
     }
   }
-  if (preview.length() == 0) preview = pointKbAlpha ? "a b c k m n p q" : "Point  x , y";
+  if (preview.length() == 0) preview = pointKbAlpha ? "letters: a b c k m n p q" : "Point  x , y";
   tft.setTextColor(previewColor);
   int pw = preview.length() * 6;
   tft.setCursor(constrain(316 - pw, 200, 316), 6);
