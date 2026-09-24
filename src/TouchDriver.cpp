@@ -88,9 +88,13 @@ TS_Point SoftTouch::getPoint() {
   return last;
 }
 
+// Waits for the finger to lift so one tap cannot trigger two actions.  The
+// loop is bounded: if the panel keeps reporting a touch (a stuck reading, a
+// ghost touch while charging) the UI must carry on instead of freezing.
 void waitTouchRelease() {
   unsigned long lastTouch = millis();
-  while (millis() - lastTouch < 40) {
+  for (int guard = 0; guard < 600; guard++) {
+    if (millis() - lastTouch >= 40) return;
     if (ts.touched()) lastTouch = millis();
     delay(2);
   }

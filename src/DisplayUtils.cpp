@@ -103,6 +103,20 @@ void printCentered(String text, int centerX, int baselineY, const GFXfont* font,
   tft.setFont(NULL);
 }
 
+// Right aligned text: used for counters that sit against the 8 px margin, so a
+// widening number grows to the left instead of running off the panel.
+void printRight(String text, int rightX, int baselineY, const GFXfont* font, uint16_t color) {
+  tft.setFont(font);
+  tft.setTextColor(color);
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.getTextBounds(text.c_str(), 0, baselineY, &x1, &y1, &w, &h);
+  int x = rightX - (int)w;
+  tft.setCursor(x < 0 ? 0 : x, baselineY);
+  tft.print(text);
+  tft.setFont(NULL);
+}
+
 void drawModernButton(int x, int y, int w, int h, int r, uint16_t bg, bool shadow) {
   if (shadow) tft.fillRoundRect(x + 2, y + 2, w, h, r, SHADOW_COLOR);
   tft.fillRoundRect(x, y, w, h, r, bg);

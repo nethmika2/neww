@@ -21,6 +21,15 @@ static const char* textKeyAt(int row, int col) {
   return textKbNumeric ? text_num_keys[row][col] : text_alpha_keys[row][col];
 }
 
+static void drawTextKey(int row, int col);
+
+// Repaints one key after it was pressed.  flashButton() leaves the key in the
+// pressed colour, so without this the label of the key you just tapped stays
+// hidden until the whole board is redrawn.
+static void redrawTextKey(int row, int col) {
+  drawTextKey(row, col);
+}
+
 static void drawTextKey(int row, int col) {
   String label = String(textKeyAt(row, col));
   int x = (col * TXT_COL_W) + 2, y = TXT_ROW_Y + (row * TXT_ROW_H) + 2;
@@ -182,7 +191,13 @@ void handleTextKeyboardTouch(bool touched, int sx, int sy) {
     textInputBuf = textInputBuf.substring(0, textInputCursor) + inserted + textInputBuf.substring(textInputCursor);
     textInputCursor += inserted.length();
   }
-  if (key == "abc" || key == "123") drawTextKeyboardScreen(true);
-  else updateTextInputBox();
+  if (key == "abc" || key == "123") {
+    drawTextKeyboardScreen(true);
+  } else {
+    updateTextInputBox();
+    // Put the key (and, after a mode change from the top bar, the whole board)
+    // back the way it was so no key is left in the pressed colour.
+    redrawTextKey(row, col);
+  }
   waitTouchRelease();
 }

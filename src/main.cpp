@@ -57,6 +57,7 @@ void setup() {
   loadFunctions();
   loadPomoStore();
   pomoApplyMode(MODE_WORK);
+  pomoLoadTimerState();  // resume a session that a reboot interrupted (paused)
   loadPoints();
   loadVariables();
   for (int i = 0; i < NUM_FUNCS; i++) compileSlot(i);
@@ -106,40 +107,10 @@ void loop() {
     drawMusicScreen(false);
   }
 
-  if (pomoRunning && millis() - lastPomoTick >= 1000) {
-    lastPomoTick += 1000;
-    if (pomoSeconds > 0) {
-      pomoSeconds--;
-      if (currentState == STATE_POMODORO && pomoView == POMO_VIEW_TIMER && displayActive()) drawPomodoroScreen(false);
-    } else {
-      // The phase is over: credit the focus block, line up the next phase and
-      // say what happened (the display wakes up for the announcement).
-      String msg = pomoCompletePhase(true);
-      setScreenPower(true);
-      if (currentState == STATE_POMODORO) {
-        // The toast paints over the screen, so the timer view is redrawn after
-        // it while the other views only need the single pass.
-        if (pomoView == POMO_VIEW_TIMER) showToast(msg);
-        drawPomodoroScreen(true);
-      } else if (displayActive()) {
-        // The phase ended while another app was open: announce it there too.
-        showToast(msg);
-        redrawCurrentScreen();
-      }
-    }
-  }
+  pomoTick();
 
-  // Rolling over to a new day has to happen even while the timer is idle so
-  // the reports and the check marks stay on the right day.
-  if (millis() - lastPomoDayCheck > 30000) {
-    lastPomoDayCheck = millis();
-    pomoEnsureToday();
-  }
+  updateScreensaver();
 
-  if (screensaverActive && millis() - lastSaverTick > 1000) {
-    lastSaverTick = millis();
-    updateScreensaver();
-  }
   if (currentState != STATE_CALIBRATE) {
     unsigned long idle = millis() - lastActivityTime;
     if (displayActive() && idle > SCREEN_TIMEOUT_MS) setScreenPower(false);

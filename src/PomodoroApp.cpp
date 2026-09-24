@@ -74,12 +74,32 @@ int pomoTopBarTab(int sx) {
 void pomoSwitchView(PomoView view) {
   if (pomoView == view) return;
   pomoView = view;
+  pomoScrollReset();
   drawPomodoroScreen(true);
 }
 
 // ==========================================
 // TIMER VIEW
 // ==========================================
+void pomoStartTiming() {
+  // Anchor the countdown to an absolute deadline; the remaining seconds are
+  // derived from it every time the loop runs.
+  pomoDeadlineMs = millis() + ((unsigned long)pomoSeconds * 1000UL);
+  lastPomoTick = millis();
+}
+
+void pomoPauseTiming() {
+  if (!pomoRunning) return;
+  long remaining = (long)(pomoDeadlineMs - millis());
+  pomoSeconds = remaining > 0 ? (int)((remaining + 999) / 1000) : 0;
+}
+
+void pomoExtendPhase(int seconds) {
+  pomoSeconds += seconds;
+  pomoPhaseTotal += seconds;
+  if (pomoRunning) pomoDeadlineMs += (unsigned long)seconds * 1000UL;
+}
+
 void pomoApplyMode(PomoMode mode) {
   pomoMode = mode;
   // Shortening the cycle length must never leave the dot row over-full.
@@ -90,7 +110,30 @@ void pomoApplyMode(PomoMode mode) {
   if (total < 60) total = 60;
   pomoPhaseTotal = total;
   pomoSeconds = total;
-  lastPomoTick = millis();
+  pomoStartTiming();
+}
+
+void pomoSaveTimerState() {
+  savePomoSettings();
+}
+
+void pomoLoadTimerState() {
+  PomoMode mode = (PomoMode)constrain(prefs.getInt("pomomode", (int)MODE_WORK), 0, 2);
+  int total = prefs.getInt("pomotot", 0);
+  int left = prefs.getInt("pomoleft", -1);
+  if (left < 0) return;  // nothing stored yet: keep the configured lengths
+  int want = pomoWorkTime;
+  if (mode == MODE_SHORT_BREAK) want = pomoShortTime;
+  else if (mode == MODE_LONG_BREAK) want = pomoLongTime;
+  if (total < 60) total = want;
+  if (left > total) left = total;
+  pomoMode = mode;
+  pomoPhaseTotal = total;
+  pomoSeconds = left;
+  pomodorosCompleted = constrain(prefs.getInt("pomocnt", 0), 0, MAX_CYCLES);
+  // Restored paused: the user decides whether to continue the session.
+  pomoRunning = false;
+  pomoStartTiming();
 }
 
 PomoMode pomoPhaseAfter(PomoMode finished) {
@@ -106,6 +149,7 @@ PomoMode pomoPhaseAfter(PomoMode finished) {
 void pomoSetMode(PomoMode mode) {
   pomoRunning = false;
   pomoApplyMode(mode);
+  pomoSaveTimerState();
   drawPomodoroScreen(true);
 }
 
@@ -171,6 +215,13 @@ void drawPomoTimerView(bool fullWipe) {
     lastMode = (int)pomoMode;
   }
 
+  // "+5 MIN": a plain, visible way to stretch the phase without restarting it.
+  // It lives in the empty strip beside the ring, so it costs two primitives.
+  if (fullWipe) {
+    drawModernButton(14, 96, 76, 26, RADIUS_SM, SURFACE_COLOR, false);
+    printCentered("+5 MIN", 52, 113, &FreeSans9pt7b, TEXT_COLOR);
+  }
+
   // Start / pause only has to be repainted when the state really changes.
   if (fullWipe || lastRunning != pomoRunning) {
     uint16_t startBg = pomoRunning ? SURFACE_HI : PLOT_COLOR;
@@ -214,6 +265,48 @@ void drawPomoTimerView(bool fullWipe) {
 }
 
 // ==========================================
+// COUNTDOWN
+// ==========================================
+// Called from the main loop.  The remaining time is derived from the phase
+// deadline rather than decremented once per second, so a stalled loop (audio
+// refill, SD access, a slow redraw, a wake up from a long pause) can never make
+// the countdown drift: the next pass simply jumps to the value the clock says
+// it should show, and a phase that was already over ends immediately.
+void pomoTick() {
+  if (!pomoRunning) {
+    lastPomoTick = millis();
+    return;
+  }
+  unsigned long now = millis();
+  long remaining = (long)(pomoDeadlineMs - now);
+  int wantSeconds = remaining > 0 ? (int)((remaining + 999) / 1000) : 0;
+  if (wantSeconds < 0) wantSeconds = 0;
+  bool changed = (wantSeconds != pomoSeconds);
+  pomoSeconds = wantSeconds;
+  if (pomoSeconds > 0) {
+    if (changed && currentState == STATE_POMODORO && pomoView == POMO_VIEW_TIMER && displayActive())
+      drawPomodoroScreen(false);
+    return;
+  }
+
+  // The phase is over: credit the focus block, line up the next phase and say
+  // what happened (the display wakes up for the announcement).
+  String msg = pomoCompletePhase(true);
+  setScreenPower(true);
+  if (currentState == STATE_POMODORO) {
+    // The toast paints over the screen, so the timer view is redrawn after it
+    // while the other views only need the single pass.
+    if (pomoView == POMO_VIEW_TIMER) showToast(msg);
+    drawPomodoroScreen(true);
+  } else if (displayActive()) {
+    // The phase ended while another app was open: announce it there too.
+    showToast(msg);
+    redrawCurrentScreen();
+  }
+  lastPomoTick = now;
+}
+
+// ==========================================
 // PHASE HANDLING
 // ==========================================
 String pomoCompletePhase(bool natural) {
@@ -238,9 +331,19 @@ String pomoCompletePhase(bool natural) {
     String msg = longBreak ? "Long break " : "Short break ";
     msg += String(pomoPhaseTotal / 60) + "m - ";
     msg += longBreak ? "cycle complete" : "nice work";
+    pomoSaveTimerState();
+    if (pomoAutoStart) {
+      pomoRunning = true;
+      pomoStartTiming();
+    }
     return msg;
   }
   pomoApplyMode(MODE_WORK);
+  pomoSaveTimerState();
+  if (pomoAutoStart) {
+    pomoRunning = true;
+    pomoStartTiming();
+  }
   return "Break over - back to work";
 }
 
@@ -249,6 +352,11 @@ void pomoSkipPhase() {
   pomoCompletePhase(false);
   setScreenPower(true);
   drawPomodoroScreen(true);
+}
+
+void pomoScrollReset() {
+  pomoScrollY = 0;
+  pomoScrollMax = 0;
 }
 
 // ==========================================
@@ -320,11 +428,13 @@ void handlePomodoroTouch(bool touched, int sx, int sy) {
   }
   if (inRect(sx, sy, 8, POMO_BTN_Y, 140, POMO_BTN_H)) {
     flashButton(8, POMO_BTN_Y, 140, POMO_BTN_H, RADIUS_MD);
-    pomoRunning = !pomoRunning;
-    if (pomoRunning) {
-      lastPomoTick = millis();
+    if (pomoRunning) pomoPauseTiming();
+    else {
+      pomoStartTiming();
       setScreenPower(true);
     }
+    pomoRunning = !pomoRunning;
+    pomoSaveTimerState();
     drawPomodoroScreen(true);
     return;
   }
@@ -335,8 +445,19 @@ void handlePomodoroTouch(bool touched, int sx, int sy) {
   }
   if (inRect(sx, sy, 230, POMO_BTN_Y, 82, POMO_BTN_H)) {
     flashButton(230, POMO_BTN_Y, 82, POMO_BTN_H, RADIUS_MD);
-    pomoRunning = false;
-    pomoApplyMode(pomoMode);
+    // Reset = back to the top of the phase; a running countdown keeps running
+    // from the full length instead of being silently paused.
+    pomoSeconds = pomoPhaseTotal;
+    pomoStartTiming();
+    pomoSaveTimerState();
+    drawPomodoroScreen(true);
+    return;
+  }
+  // A running timer can be topped up without restarting the phase.
+  if (inRect(sx, sy, 14, 96, 76, 26)) {
+    flashButton(14, 96, 76, 26, RADIUS_SM);
+    pomoExtendPhase(300);
+    pomoSaveTimerState();
     drawPomodoroScreen(true);
     return;
   }

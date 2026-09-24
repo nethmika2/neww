@@ -3,3 +3,8 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Host verification harness output
+tools/hostcheck/build/
+tools/hostcheck/shots/
+tools/hostcheck/png/

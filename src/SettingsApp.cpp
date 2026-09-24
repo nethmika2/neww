@@ -32,8 +32,8 @@ static const int CLOCK_BTN_W = 70;
 
 static void drawToggleCard(int x, int y, const char* title, const char* const* labels, int active) {
   drawCard(x, y, CARD_W, CARD_H, false, RADIUS_MD);
-  drawSectionLabel(title, x + 10, y + 16);
-  drawSegmentedControl(x + 10, y + 24, CARD_W - 20, 26, labels, 2, active);
+  drawSectionLabel(title, x + 10, y + 13);
+  drawSegmentedControl(x + 10, y + 26, CARD_W - 20, 26, labels, 2, active);
 }
 
 void drawSettingsScreen() {
@@ -51,7 +51,11 @@ void drawSettingsScreen() {
   drawToggleCard(COL_L, ROW_1, "X AXIS", axisLabels, xAxisPi ? 1 : 0);
   drawToggleCard(COL_R, ROW_1, "Y AXIS", axisLabels, yAxisPi ? 1 : 0);
   drawToggleCard(COL_L, ROW_2, "IDLE SCREEN", idleLabels, screensaverEnabled ? 0 : 1);
-  drawToggleCard(COL_R, ROW_2, "EARBUD BUTTONS", budLabels, earbudControlsEnabled() ? 0 : 1);
+  // The counter next to the earbud switch is a live diagnostic: it moves as
+  // soon as the buds send anything, so a hardware problem can be told apart
+  // from a settings problem without a serial monitor.
+  String budTitle = String("EARBUD BUTTONS ") + String(earbudEventCount());
+  drawToggleCard(COL_R, ROW_2, budTitle.c_str(), budLabels, earbudControlsEnabled() ? 0 : 1);
 
   // Clock card: the time is the headline, the four buttons are the actions.
   drawCard(CLOCK_CARD_X, CLOCK_CARD_Y, CLOCK_CARD_W, CLOCK_CARD_H, false, RADIUS_MD);

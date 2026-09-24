@@ -64,6 +64,13 @@ extern unsigned long lastPomoTick;
 // the user's saved timings/preset.
 extern int pomoWorkTime, pomoShortTime, pomoLongTime, pomoLongEvery;
 extern int pomoDailyGoal;
+// Wall-clock deadline of the running phase and the auto start preference.
+// Counting down from a deadline (instead of subtracting one second per tick)
+// keeps the timer honest even if the loop stalls for a while.
+extern unsigned long pomoDeadlineMs;
+extern bool pomoAutoStart;
+// Scroll offset and maximum for the Pomodoro pages that can overflow.
+extern int pomoScrollY, pomoScrollMax;
 // Length of the phase currently on screen.  Kept separate from the configured
 // timings so editing a duration mid-session cannot corrupt the progress ring.
 extern int pomoPhaseTotal;

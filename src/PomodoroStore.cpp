@@ -19,6 +19,13 @@ void savePomoSettings() {
   prefs.putInt("pomoe", pomoLongEvery);
   prefs.putInt("pomog", pomoDailyGoal);
   prefs.putInt("pomotask", pomoActiveTask);
+  prefs.putBool("pomoauto", pomoAutoStart);
+  // Timer state: a reboot (or a flat battery) resumes where it left off,
+  // paused, instead of silently resetting the session.
+  prefs.putInt("pomomode", (int)pomoMode);
+  prefs.putInt("pomoleft", pomoSeconds);
+  prefs.putInt("pomotot", pomoPhaseTotal);
+  prefs.putInt("pomocnt", pomodorosCompleted);
 }
 
 void savePomoTemplates() {
@@ -111,6 +118,7 @@ void loadPomoStore() {
   pomoLongEvery = constrain(prefs.getInt("pomoe", DEFAULT_CYCLES_BEFORE_LONG), MIN_CYCLES, MAX_CYCLES);
   pomoDailyGoal = constrain(prefs.getInt("pomog", DEFAULT_DAILY_GOAL), MIN_DAILY_GOAL, MAX_DAILY_GOAL);
   pomoActiveTask = prefs.getInt("pomotask", -1);
+  pomoAutoStart = prefs.getBool("pomoauto", false);
 
   for (int i = 0; i < MAX_POMO_TEMPLATES; i++) {
     String p = "tp" + String(i);
@@ -244,6 +252,17 @@ void togglePomoTaskDone(int idx) {
       }
     savePomoSettings();
   }
+  savePomoTasks();
+}
+
+// The estimate is a plain number of blocks, so it goes down as well as up.
+// (The original stepper only cycled upwards, which is why the count could not
+// be lowered.)
+void adjustPomoTaskTarget(int idx, int delta) {
+  if (idx < 0 || idx >= MAX_POMO_TASKS || !pomoTasks[idx].in_use) return;
+  int target = (int)pomoTasks[idx].target + delta;
+  pomoTasks[idx].target = (uint8_t)constrain(target, 1, MAX_TASK_BLOCKS);
+  pomoTasks[idx].done = (pomoTasks[idx].blocks >= pomoTasks[idx].target) ? 1 : 0;
   savePomoTasks();
 }
 

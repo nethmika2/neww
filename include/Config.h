@@ -119,8 +119,9 @@ static const int MAX_CYCLES = 8;
 static const int MIN_DAILY_GOAL = 1;
 static const int MAX_DAILY_GOAL = 16;
 
-#define MAX_POMO_TEMPLATES 4
-#define MAX_POMO_TASKS 6
+#define MAX_POMO_TEMPLATES 6
+#define MAX_POMO_TASKS 8
+#define MAX_TASK_BLOCKS 12  // upper limit for a task's block estimate
 #define POMO_HISTORY_DAYS 90
 #define POMO_NAME_LEN 22
 static const char* const EARBUD_NAME = "soundcore R50i NC";

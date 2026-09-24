@@ -17,6 +17,7 @@ void updateScreensaver();
 bool inRect(int px, int py, int rx, int ry, int rw, int rh);
 uint16_t brighten565(uint16_t c, int amt);
 void printCentered(String text, int centerX, int baselineY, const GFXfont* font, uint16_t color);
+void printRight(String text, int rightX, int baselineY, const GFXfont* font, uint16_t color);
 void drawModernButton(int x, int y, int w, int h, int r, uint16_t bg, bool shadow);
 void flashButton(int x, int y, int w, int h, int r);
 void showToast(String msg);

@@ -51,6 +51,9 @@ int pomoWorkTime = DEFAULT_WORK_TIME, pomoShortTime = DEFAULT_SHORT_BREAK, pomoL
 int pomoLongEvery = DEFAULT_CYCLES_BEFORE_LONG;
 int pomoDailyGoal = DEFAULT_DAILY_GOAL;
 int pomoPhaseTotal = DEFAULT_WORK_TIME;
+unsigned long pomoDeadlineMs = 0;
+bool pomoAutoStart = false;
+int pomoScrollY = 0, pomoScrollMax = 0;
 PomoView pomoView = POMO_VIEW_TIMER;
 StatsTab statsTab = STATS_DAY;
 int pomoStatsPage = 0;
@@ -177,14 +180,15 @@ const char* point_alpha_keys[5][6] = {
   { "<-", "->", "1", "2", "3", "ADD" }
 };
 
-// The generic text keyboard used for task and preset names.  Row 5 of the
-// letter page carries the space bar, so names can hold two words.
+// The generic text keyboard used for task and routine names.  The letters run
+// in the usual QWERTY order, wrapped at six columns, so the layout matches a
+// normal keyboard instead of an A-Z grid.
 const char* text_alpha_keys[5][6] = {
-  { "a", "b", "c", "d", "e", "f" },
-  { "g", "h", "i", "j", "k", "l" },
-  { "m", "n", "o", "p", "q", "r" },
-  { "s", "t", "u", "v", "w", "x" },
-  { "y", "z", "SP", "<-", "->", "DEL" }
+  { "q", "w", "e", "r", "t", "y" },
+  { "u", "i", "o", "p", "a", "s" },
+  { "d", "f", "g", "h", "j", "k" },
+  { "l", "z", "x", "c", "v", "b" },
+  { "n", "m", "SP", "<-", "->", "DEL" }
 };
 
 const char* text_num_keys[5][6] = {

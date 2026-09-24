@@ -18,9 +18,21 @@ void drawPomoTopBar();
 int pomoTopBarTab(int sx);  // tab index under x on the bar, or -1
 void pomoSwitchView(PomoView view);
 
+// ---- page scrolling (PomodoroViews.cpp) ------------------------------------
+// Pages that hold more than one screenful shift their content by pomoScrollY
+// and expose a down/up control in the bottom right corner.
+bool pomoHandleScrollTouch(int sx, int sy);
+void pomoScrollReset();
+
 // ---- timer screen ----------------------------------------------------------
 void drawPomoTimerView(bool fullWipe);
 void pomoApplyMode(PomoMode mode);
+void pomoTick();                 // main loop countdown step
+void pomoStartTiming();          // (re)anchor the countdown to now
+void pomoPauseTiming();          // freeze pomoSeconds from the deadline
+void pomoExtendPhase(int seconds);
+void pomoSaveTimerState();       // persist mode + remaining time
+void pomoLoadTimerState();       // restore them (paused) after a reboot
 // Ends the phase on screen, credits the finished focus work and returns a
 // message describing what comes next.
 String pomoCompletePhase(bool natural);

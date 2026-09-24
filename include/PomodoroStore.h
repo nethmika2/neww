@@ -24,6 +24,7 @@ String pomoTemplateSummary(const PomoTemplate& t);
 int addPomoTask(const String& text);  // -1 when the list is full
 void deletePomoTask(int idx);
 void togglePomoTaskDone(int idx);
+void adjustPomoTaskTarget(int idx, int delta);  // clamped to 1..MAX_TASK_BLOCKS
 void cyclePomoTaskTarget(int idx);
 void clearDonePomoTasks();
 void pomoCreditActiveTask();  // one more finished focus block for the active item
