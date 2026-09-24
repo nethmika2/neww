@@ -46,6 +46,7 @@ esp_err_t hostAvrcRnCapHas(esp_avrc_rn_event_ids_t e);
 void hostAvrcReset();
 void hostMakeWav(const char *path, int seconds, int freq, uint32_t sampleRate);
 void hostMakeFile(const char *path, const char *text);
+void hostSetNameBaseOnly(bool v);
 
 static bool hostDrewText(const char *fragment);
 static int failures = 0;
@@ -680,8 +681,10 @@ static void testStudy() {
   drawStudyScreen(true);
   CHECK(hostDrewText("STUDY"));
   CHECK(hostDrewText("Analytical Chem"));
-  CHECK(hostDrewText("4 topics"));
-  CHECK(hostDrewText("5 cards"));
+  // Counts are not known until a note has been opened: the list shows the size
+  // and opens instantly rather than reading every file on the way in.
+  CHECK(hostDrewText("KB"));
+  CHECK(hostDrewText("tap to open"));
 
   handleStudyTouch(true, 60, 57);                 // first row, away from CARDS
   CHECK(hostDrewText("Titration essentials"));
@@ -690,6 +693,16 @@ static void testStudy() {
   HostDraw::reset();
   handleStudyTouch(true, 60, 51);                 // first topic row
   CHECK(hostDrewText("Standard solution"));
+
+  // Now that the note has been parsed, the list shows its counts.
+  handleStudyTouch(true, 20, 12);                 // back to the topics
+  handleStudyTouch(true, 20, 12);                 // back to the subjects
+  HostDraw::reset();
+  drawStudyScreen(true);
+  CHECK(hostDrewText("4 topics"));
+  CHECK(hostDrewText("5 cards"));
+  handleStudyTouch(true, 60, 57);                 // open it again for the rest
+  handleStudyTouch(true, 60, 51);
 
   // Scrolling moves the text; the down control is in the bottom right corner.
   HostDraw::reset();
@@ -751,9 +764,69 @@ static void testStudy() {
   CHECK(hostDrewText("RELOAD"));
   sdReady = true;
 
+  // Cores differ on whether File::name() includes the folder.  When it does not,
+  // the note path still has to come out as /study/<file>, or every note fails to
+  // open (the symptom: a full list, but tapping a subject does nothing).
+  {
+    studyRelease();
+    SD.reset();
+    hostSetNameBaseOnly(true);
+    CHECK_EQ(installSampleNotes(), 2);
+    studyRefreshSubjects();
+    CHECK_EQ(studySubjectCount(), 2);
+    handleStudyTouch(true, 60, 57);               // open the first subject
+    HostDraw::reset();
+    handleStudyTouch(true, 60, 51);               // and its first topic
+    CHECK(hostDrewText("Standard solution"));     // the note really loaded
+    handleStudyTouch(true, 20, 12);
+    handleStudyTouch(true, 20, 12);
+    handleStudyTouch(true, 20, 12);               // back home
+    hostSetNameBaseOnly(false);
+  }
+
+  // No /study folder: notes dropped on the card root are still found, and the
+  // list says where they came from.
+  {
+    studyRelease();
+    SD.reset();
+    hostMakeFile("/revision.txt", "# Roots\n## Straight to the point\nbody text\n");
+    studyRefreshSubjects();
+    CHECK_EQ(studySubjectCount(), 1);
+    currentState = STATE_STUDY;
+    HostDraw::reset();
+    drawStudyScreen(true);
+    CHECK(hostDrewText("Roots"));
+    CHECK(hostDrewText("from card root"));
+    handleStudyTouch(true, 60, 57);
+    HostDraw::reset();
+    drawStudyScreen(true);
+    CHECK(hostDrewText("Straight to the point"));
+  }
+
+  // A Sinhala note must not draw garbage: the ASCII parts are kept, the rest is
+  // dropped, and the reader points at the converter.
+  {
+    studyRelease();
+    SD.reset();
+    hostMakeFile("/study/sinhala.txt",
+                 "# Jaiva vidyava\n"
+                 "## \xe0\xb6\xb1\xe0\xb7\x92\xe0\xb6\xba\xe0\xb7\x94\xe0\xb6\x9c\xe0\xb7\x9a\n"
+                 "The cell is the unit of life.\n"
+                 "- \xe0\xb6\xb4\xe0\xb7\x8a\xe0\xb6\xbb\xe0\xb7\x8a\xe0\xb6\xb8\xe0\xb7\x8a membrane\n");
+    studyRefreshSubjects();
+    CHECK_EQ(studySubjectCount(), 1);
+    handleStudyTouch(true, 60, 57);               // open it
+    HostDraw::reset();
+    handleStudyTouch(true, 60, 51);               // first topic
+    CHECK(hostDrewText("The cell is the unit of life"));
+    CHECK(hostDrewText("membrane"));
+    CHECK(hostDrewText("non-ASCII text removed"));
+  }
+
   // A note larger than the reader's pool is cut, and says so on screen instead
   // of silently losing the end of the document.
   {
+    studyRelease();
     std::string big = "# Oversized note\n## First topic\n";
     for (int i = 0; i < 900; i++) big += "- a line of revision text that fills the pool\n";
     SD.reset();

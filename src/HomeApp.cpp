@@ -140,10 +140,7 @@ void handleHomeTouch(bool touched, int sx, int sy) {
     drawPomodoroScreen(true);
   } else if (inRect(sx, sy, HOME_CARD_X[3], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H)) {
     flashButton(HOME_CARD_X[3], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H, RADIUS_LG);
-    currentState = STATE_STUDY;
-    studyRefreshSubjects();
-    tft.fillScreen(BG_COLOR);
-    drawStudyScreen(true);
+    studyEnterApp();
   } else if (inRect(sx, sy, 280, 0, 40, 30)) {
     flashButton(280, 3, 34, 24, RADIUS_SM);
     currentState = STATE_SETTINGS;

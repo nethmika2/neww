@@ -26,6 +26,117 @@ import sys
 from html.parser import HTMLParser
 
 WRAP = 48           # characters per line; the firmware wraps at 49
+
+# ---------------------------------------------------------------------------
+# Sinhala
+# ---------------------------------------------------------------------------
+# The panel fonts are Latin only (FreeSans subsets plus a 5x7 ASCII bitmap), so
+# Sinhala cannot be drawn at all - it would come out as garbage.  Notes written
+# in Sinhala are therefore romanised on the way in, using the plain SLS-1134
+# style with ASCII letters (no ā/ṭ/ḍ diacritics): ශ sh, ළ l, long vowels
+# doubled (aa, ii, uu), dental ත/ද written th/dh and retroflex ට/ඩ written t/d
+# so the two rows stay apart, and the al-lakuna dropping the inherent vowel.
+SINHALA_CONSONANTS = {
+    "ක": "k", "ඛ": "kh", "ග": "g", "ඝ": "gh", "ඞ": "ng", "ඟ": "ng",
+    "ච": "ch", "ඡ": "chh", "ජ": "j", "ඣ": "jh", "ඤ": "ny", "ඥ": "gny", "ඦ": "nyj",
+    "ට": "t", "ඨ": "th", "ඩ": "d", "ඪ": "dh", "ණ": "n", "ඬ": "nd",
+    "ත": "th", "ථ": "thh", "ද": "dh", "ධ": "dhh", "න": "n", "ඳ": "nd",
+    "ප": "p", "ඵ": "ph", "බ": "b", "භ": "bh", "ම": "m", "ඹ": "mb",
+    "ය": "y", "ර": "r", "ල": "l", "ව": "w",
+    "ශ": "sh", "ෂ": "sh", "ස": "s", "හ": "h", "ළ": "l", "ෆ": "f",
+}
+SINHALA_VOWELS = {
+    "අ": "a", "ආ": "aa", "ඇ": "ae", "ඈ": "aae", "ඉ": "i", "ඊ": "ii",
+    "උ": "u", "ඌ": "uu", "ඍ": "ru", "ඎ": "ruu", "ඏ": "lu", "ඐ": "luu",
+    "එ": "e", "ඒ": "ee", "ඓ": "ai", "ඔ": "o", "ඕ": "oo", "ඖ": "au",
+}
+# Dependent vowel signs: replace the inherent "a" of a consonant.
+SINHALA_SIGNS = {
+    "ා": "aa", "ැ": "ae", "ෑ": "aae", "ි": "i", "ී": "ii",
+    "ු": "u", "ූ": "uu", "ෘ": "ru", "ෲ": "ruu", "ෟ": "lu",
+    "ෙ": "e", "ේ": "ee", "ෛ": "ai", "ො": "o", "ෝ": "oo", "ෞ": "au",
+}
+SINHALA_OTHER = {"ං": "ng", "ඃ": "h"}
+AL_LAKUNA = "\u0dca"      # ්  - kills the inherent vowel
+ZWJ = "\u200d"
+ZWNJ = "\u200c"
+# ්‍ය (yansaya) and ්‍ර (rakaransaya): the consonant plus y / r.
+SINHALA_DIGITS = {chr(0x0DE6 + i): str(i) for i in range(10)}
+
+
+def sinhala_to_latin(text: str) -> str:
+    """Romanise Sinhala script.  Latin and punctuation pass through untouched."""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch in SINHALA_DIGITS:
+            out.append(SINHALA_DIGITS[ch])
+            i += 1
+        elif ch in SINHALA_CONSONANTS:
+            base = SINHALA_CONSONANTS[ch]
+            i += 1
+            # Look ahead for a vowel sign, the al-lakuna, or a consonant cluster.
+            if i < n and text[i] in (ZWJ, ZWNJ):
+                i += 1
+            if i < n and text[i] == AL_LAKUNA:
+                i += 1
+                if i < n and text[i] in (ZWJ, ZWNJ):
+                    i += 1
+                if i < n and text[i] in ("ය", "ර"):
+                    # Yansaya / rakaransaya: the half consonant plus y / r, and
+                    # the vowel that follows belongs to that second consonant
+                    # (න්‍යෂ්ටිය -> nyashtiya, ද්‍රව්‍ය -> dhrawya).
+                    out.append(base + ("y" if text[i] == "ය" else "r"))
+                    i += 1
+                    if i < n and text[i] in (ZWJ, ZWNJ):
+                        i += 1
+                    if i < n and text[i] == AL_LAKUNA:
+                        i += 1
+                    if i < n and text[i] in SINHALA_SIGNS:
+                        out.append(SINHALA_SIGNS[text[i]])
+                        i += 1
+                    else:
+                        out.append("a")
+                else:
+                    out.append(base)
+            elif i < n and text[i] in SINHALA_SIGNS:
+                out.append(base + SINHALA_SIGNS[text[i]])
+                i += 1
+            else:
+                out.append(base + "a")     # inherent vowel
+        elif ch in SINHALA_VOWELS:
+            out.append(SINHALA_VOWELS[ch])
+            i += 1
+        elif ch in SINHALA_SIGNS:
+            out.append(SINHALA_SIGNS[ch])  # vowel sign without a consonant
+            i += 1
+        elif ch in SINHALA_OTHER:
+            out.append(SINHALA_OTHER[ch])
+            i += 1
+        elif ch in (ZWJ, ZWNJ):
+            i += 1
+        elif 0x0D80 <= ord(ch) <= 0x0DFF:
+            i += 1                          # any other Sinhala mark: drop it
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def is_sinhala(ch: str) -> bool:
+    return 0x0D80 <= ord(ch) <= 0x0DFF
+
+
+def romanise(text: str, mode: str) -> tuple[str, int]:
+    """Returns (text, sinhala characters seen).  mode: roman | drop | keep."""
+    count = sum(1 for c in text if is_sinhala(c))
+    if count == 0 or mode == "keep":
+        return text, count
+    if mode == "drop":
+        return "".join(c for c in text if not is_sinhala(c)), count
+    return sinhala_to_latin(text), count
 HEADINGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 SKIP_TAGS = {"script", "style", "head", "title", "nav", "svg", "noscript"}
 BLOCK_TAGS = {"p", "div", "section", "article", "header", "footer", "blockquote", "pre", "figure",
@@ -143,14 +254,24 @@ def wrap(text: str, width: int, indent: int = 0) -> list[str]:
     return lines
 
 
-def convert(path: str, split: int) -> list[tuple[str, str]]:
-    """Returns [(suggested file stem, file text)] for one HTML document."""
+def convert(path: str, split: int, sinhala_mode: str = "roman") -> tuple[list[tuple[str, str]], int]:
+    """Returns ([(suggested file stem, file text)], sinhala characters seen)."""
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         raw = fh.read()
 
     parser = NoteExtractor()
     parser.feed(raw)
     parser.close()
+
+    # Sinhala cannot be drawn on the panel: romanise it here so the note is
+    # readable on the device (see the Sinhala section above).
+    blocks: list[tuple[str, str]] = []
+    sinhala_seen = 0
+    for kind, text in parser.blocks:
+        text, seen = romanise(text, sinhala_mode)
+        sinhala_seen += seen
+        blocks.append((kind, text))
+    parser.blocks = blocks
 
     title = ""
     out: list[str] = []
@@ -220,37 +341,90 @@ def convert(path: str, split: int) -> list[tuple[str, str]]:
 
     stem = slugify(path)
     if len(chunks) == 1:
-        return [(stem, "# " + title + "\n" + "\n".join(chunks[0]).lstrip("\n") + "\n")]
+        return [(stem, "# " + title + "\n" + "\n".join(chunks[0]).lstrip("\n") + "\n")], sinhala_seen
     out_files = []
     for i, chunk in enumerate(chunks):
         head = f"# {title} (part {i + 1})" if len(chunks) > 1 else f"# {title}"
         out_files.append((f"{stem}-part{i + 1}", head + "\n" + "\n".join(chunk).lstrip("\n") + "\n"))
-    return out_files
+    return out_files, sinhala_seen
+
+
+SELFTEST_CASES = [
+    # (Sinhala, expected romanisation)
+    ("සෛලය", "sailaya"),
+    ("ජීවය", "jiiwaya"),
+    ("න්‍යෂ්ටිය", "nyashtiya"),
+    ("ද්‍රව්‍ය", "dhrawya"),
+    ("විද්‍යාව", "widhyaawa"),
+    ("ශක්තිය", "shakthiya"),
+    ("ජලය", "jalaya"),
+    ("අම්මා", "ammaa"),
+    ("පාසල", "paasala"),
+    ("වර්ෂාව", "warshaawa"),
+    ("ප්‍රතිඵල", "prathiphala"),
+    ("දෙවන", "dhewana"),
+    ("එක", "eka"),
+    ("හා", "haa"),
+    ("123", "123"),
+    ("H2O", "H2O"),
+]
+
+
+def selftest() -> int:
+    bad = 0
+    for src, want in SELFTEST_CASES:
+        got = sinhala_to_latin(src)
+        if got != want:
+            print(f"SELFTEST FAIL {src!r}: got {got!r}, want {want!r}")
+            bad += 1
+    if any(ord(c) > 127 for c in sinhala_to_latin(" ".join(s for s, _ in SELFTEST_CASES))):
+        print("SELFTEST FAIL: romanisation left non-ASCII behind")
+        bad += 1
+    if romanise("abc", "drop")[0] != "abc":
+        print("SELFTEST FAIL: latin text must pass through untouched")
+        bad += 1
+    if romanise("ස", "drop")[0] != "":
+        print("SELFTEST FAIL: --sinhala drop must delete Sinhala")
+        bad += 1
+    if romanise("ස", "keep")[0] != "ස":
+        print("SELFTEST FAIL: --sinhala keep must leave the text alone")
+        bad += 1
+    print(f"mkstudy self-test: {len(SELFTEST_CASES) + 4} checks, {bad} failures")
+    return 1 if bad else 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Convert HTML revision notes for the CYD STUDY app.")
-    ap.add_argument("inputs", nargs="+", help="HTML files to convert")
+    ap.add_argument("inputs", nargs="*", help="HTML files to convert")
+    ap.add_argument("--selftest", action="store_true", help="run the romaniser checks and exit")
     ap.add_argument("--out", default="sd-card/study", help="output folder (default: sd-card/study)")
+    ap.add_argument("--sinhala", choices=("roman", "drop", "keep"), default="roman",
+                    help="what to do with Sinhala text: romanise it (default), drop it, "
+                         "or keep it (it cannot be drawn on the device)")
     ap.add_argument("--split", type=int, default=15000,
                     help="split a note into parts above this many characters "
                          "(0 = never; the reader holds about 16000)")
     args = ap.parse_args()
+    if args.selftest:
+        return selftest()
 
     os.makedirs(args.out, exist_ok=True)
     written = 0
+    sinhala_seen = 0
     for path in args.inputs:
         if not os.path.isfile(path):
             print(f"skip (not a file): {path}", file=sys.stderr)
             continue
-        for stem, text in convert(path, args.split):
+        files, sinhala_seen = convert(path, args.split, args.sinhala)
+        for stem, text in files:
             target = os.path.join(args.out, stem + ".txt")
             with open(target, "w", encoding="utf-8") as fh:
                 fh.write(text)
             topics = text.count("\n## ")
             cards = topics + text.count("\nQ: ")
+            extra = f", Sinhala x{sinhala_seen}" if sinhala_seen else ""
             print(f"{os.path.basename(path)} -> {target}  "
-                  f"({len(text)} chars, {topics} topics, {cards} cards)")
+                  f"({len(text)} chars, {topics} topics, {cards} cards{extra})")
             written += 1
     if not written:
         print("nothing converted", file=sys.stderr)

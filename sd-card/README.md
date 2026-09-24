@@ -9,9 +9,10 @@ reflashing the board.
   /study/         one .txt file per subject
      analytical-chemistry.txt
      optics.txt
+     sinhala.txt
 ```
 
-The two notes in `study/` are samples kept in the repository so the app can be
+The notes in `study/` are samples kept in the repository so the app can be
 reviewed and tested without a card attached. Replace them with your own.
 
 ## Note format
@@ -46,3 +47,21 @@ Headings become `##` topics, lists become bullets, tables become bullet rows
 with `|` between the cells, and long paragraphs are wrapped to the width the
 reader uses. Files are written lowercase-with-dashes, and each one lands under
 the size the app can hold.
+
+### Notes written in Sinhala
+
+The panel's fonts are Latin only, so Sinhala cannot be drawn — it would show as
+garbage. The converter romanises it instead (plain SLS-1134 style, ASCII only):
+
+```
+python3 tools/mkstudy.py jaiwa.html --out sd-card/study                 # romanise (default)
+python3 tools/mkstudy.py jaiwa.html --out sd-card/study --sinhala drop  # remove Sinhala
+python3 tools/mkstudy.py jaiwa.html --out sd-card/study --sinhala keep  # leave it alone
+```
+
+So `ජෛව විද්‍යාව` becomes `jaiwa widhyaawa`, `න්‍යෂ්ටිය` becomes `nyashtiya`,
+`ද්‍රව්‍ය` becomes `dhrawya`, and `සෛලය ජීවයේ ඒකකයයි` becomes
+`sailaya jiiwayee eekakayayi`. English text in the same document is untouched,
+and `sinhala.txt` in `study/` is a converted sample. The romaniser has its own
+checks — `python3 tools/mkstudy.py --selftest` — which the host harness runs
+with `tools/hostcheck/check.sh`.

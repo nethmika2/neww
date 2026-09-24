@@ -26,6 +26,15 @@ static const int ST_NAME_LEN = 26;
 static const int ST_PATH_LEN = 44;
 static const char* ST_DIR = "/study";
 
+// Hard limits so the app can never sit on the SD card forever: a card that
+// answers slowly, or a folder with a huge number of entries, costs a bounded
+// amount of time and then the screen is drawn with what was found.  yield()
+// inside both walks keeps the idle task fed, so the task watchdog cannot fire
+// while a long read is in progress.
+static const int ST_MAX_DIR_ENTRIES = 64;
+static const unsigned long ST_DIR_BUDGET_MS = 1500;
+static const unsigned long ST_LOAD_BUDGET_MS = 2500;
+
 // ==========================================
 // LAYOUT (8 px grid, same chrome as the other apps)
 // ==========================================
@@ -68,12 +77,27 @@ enum : uint8_t {
 struct StudySubject {
   char name[ST_NAME_LEN];
   char path[ST_PATH_LEN];
+  uint16_t sizeKB;      // from the directory entry: no file read needed
   uint16_t topics;
   uint16_t cards;
+  bool counted;         // true once the note has been opened (or was cached)
 };
 
 static StudySubject stSubjects[ST_MAX_SUBJECTS];
 static int stSubjectCount = 0;
+static bool stFromCardRoot = false;   // notes came from the root, not /study
+static bool stMountRetried = false;   // /study mount retried once per session
+
+// Topic and card counts are only known after a note has been parsed, so the
+// list remembers them for the rest of the session instead of re-reading every
+// file each time the screen is opened.
+struct StudyCount {
+  char path[ST_PATH_LEN];
+  uint16_t topics;
+  uint16_t cards;
+};
+static StudyCount stCountCache[ST_MAX_SUBJECTS];
+static int stCountCacheUsed = 0;
 
 static char stPool[ST_BUF_BYTES];
 static uint16_t stLineOff[ST_MAX_LINES + 1];
@@ -81,6 +105,7 @@ static uint8_t stLineStyle[ST_MAX_LINES];
 static int stLineCount = 0;
 static int stPoolUsed = 0;
 static bool stTruncated = false;
+static bool stNonAsciiDropped = false;
 
 static uint16_t stTopicLine[ST_MAX_TOPICS];
 static int stTopicCount = 0;
@@ -110,21 +135,62 @@ static int stCardScrollMax = 0;
 // SMALL HELPERS
 // ==========================================
 
-// A subject's display name is derived from the file name: no folder, no .txt,
+// The panel fonts cover ASCII only: a byte above 0x7F (Sinhala, or any other
+// non-Latin script) would be drawn as garbage glyphs.  Text is filtered to
+// ASCII here and the app says so on screen, pointing at tools/mkstudy.py, which
+// transliterates Sinhala into Latin before the note reaches the card.
+static int studyToAscii(const char* src, int len, char* dst, int dstLen, bool* dropped) {
+  int n = 0;
+  for (int i = 0; i < len && n < dstLen - 1; i++) {
+    unsigned char c = (unsigned char)src[i];
+    if (c >= 0x80) {
+      if (dropped) *dropped = true;
+      continue;
+    }
+    dst[n++] = (char)c;
+  }
+  dst[n] = 0;
+  return n;
+}
+
+// A subject's display name comes from the file name: no folder, no .txt,
 // underscores become spaces.
 static void studyNameFromPath(const char* path, char* out, int outLen) {
   const char* base = strrchr(path, '/');
   base = base ? base + 1 : path;
   int n = 0;
-  while (base[n] && base[n] != '.' && n < outLen - 1) {
-    out[n] = (base[n] == '_') ? ' ' : base[n];
-    n++;
+  while (base[n] && base[n] != '.' && n < outLen - 1) out[n++] = base[n];
+  out[n] = 0;
+
+  char clean[ST_NAME_LEN];
+  studyToAscii(out, n, clean, ST_NAME_LEN, nullptr);
+  n = 0;
+  bool lastSpace = true;
+  for (int i = 0; clean[i] && n < outLen - 1; i++) {
+    char c = (clean[i] == '_' || clean[i] == '-' && i == 0) ? ' ' : clean[i];
+    if (c == ' ') {
+      if (lastSpace) continue;
+      lastSpace = true;
+    } else {
+      lastSpace = false;
+    }
+    out[n++] = c;
   }
   out[n] = 0;
-  if (n == 0 && outLen > 1) {
-    out[0] = '?';
-    out[1] = 0;
+  if (n == 0) {
+    strncpy(out, "Note", outLen - 1);
+    out[outLen - 1] = 0;
   }
+}
+
+// Cards can hand back either "note.txt" or "/study/note.txt" from name(), so the
+// folder is always rebuilt from the entry's own base name.
+static void studyMakePath(const char* dir, const char* name, char* out, int outLen) {
+  const char* base = strrchr(name, '/');
+  base = base ? base + 1 : name;
+  if (strcmp(dir, "/") == 0) snprintf(out, outLen, "/%s", base);
+  else snprintf(out, outLen, "%s/%s", dir, base);
+  out[outLen - 1] = 0;
 }
 
 static bool studyIsNoteFile(const char* path) {
@@ -133,6 +199,100 @@ static bool studyIsNoteFile(const char* path) {
   const char* ext = path + len - 4;
   if (ext[0] != '.') return false;
   return (tolower(ext[1]) == 't' && tolower(ext[2]) == 'x' && tolower(ext[3]) == 't');
+}
+
+// The "# Title" line carries the proper subject name, and reading a couple of
+// hundred bytes for it is cheap even on a slow card, so the list shows real
+// titles without parsing the whole note.
+static void studyReadTitle(const char* path, char* out, int outLen) {
+  out[0] = 0;
+  File f = SD.open(path, FILE_READ);
+  if (!f) return;
+  char buf[192];
+  int n = (int)f.read((uint8_t*)buf, sizeof(buf) - 1);
+  f.close();
+  if (n <= 0) return;
+  buf[n] = 0;
+  char* line = buf;
+  while (*line) {
+    char* eol = strchr(line, '\n');
+    int len = eol ? (int)(eol - line) : (int)strlen(line);
+    while (len > 0 && (line[len - 1] == '\r' || line[len - 1] == ' ')) len--;
+    if (line[0] == '#' && len > 2 && line[1] != '#') {
+      char clean[ST_NAME_LEN];
+      studyToAscii(line + 2, len - 2, clean, ST_NAME_LEN, nullptr);
+      if (clean[0]) {
+        strncpy(out, clean, outLen - 1);
+        out[outLen - 1] = 0;
+      }
+      return;
+    }
+    if (!eol) return;
+    line = eol + 1;
+  }
+}
+
+// Directory handles: name() may or may not include the folder, so only the base
+// name is trusted.  The walk is capped and reports what it hit on the serial
+// port, which is how a card problem is told apart from a firmware one.
+static int studyListDir(const char* dir) {
+  File handle = SD.open(dir, FILE_READ);
+  if (!handle || !handle.isDirectory()) {
+    Serial.printf("[I][study] no folder %s\n", dir);
+    return 0;
+  }
+  int examined = 0;
+  unsigned long start = millis();
+  File entry = handle.openNextFile();
+  while (entry) {
+    if (++examined > ST_MAX_DIR_ENTRIES || millis() - start > ST_DIR_BUDGET_MS) {
+      Serial.printf("[W][study] listing %s truncated after %d entries\n", dir, examined - 1);
+      break;
+    }
+    if (!entry.isDirectory() && stSubjectCount < ST_MAX_SUBJECTS) {
+      const char* raw = entry.name();
+      if (raw && studyIsNoteFile(raw)) {
+        StudySubject& s = stSubjects[stSubjectCount];
+        memset(&s, 0, sizeof(s));
+        studyMakePath(dir, raw, s.path, ST_PATH_LEN);
+        studyNameFromPath(raw, s.name, ST_NAME_LEN);
+        if (millis() - start < ST_DIR_BUDGET_MS) studyReadTitle(s.path, s.name, ST_NAME_LEN);
+        uint32_t bytes = (uint32_t)entry.size();
+        s.sizeKB = (uint16_t)min(9999UL, (unsigned long)(bytes / 1024UL) + (bytes % 1024 ? 1 : 0));
+        for (int c = 0; c < stCountCacheUsed; c++) {
+          if (strcmp(stCountCache[c].path, s.path) == 0) {
+            s.topics = stCountCache[c].topics;
+            s.cards = stCountCache[c].cards;
+            s.counted = true;
+            break;
+          }
+        }
+        stSubjectCount++;
+      }
+    }
+    entry.close();
+    yield();
+    entry = handle.openNextFile();
+  }
+  handle.close();
+  return stSubjectCount;
+}
+
+// Counts for a note that was just parsed are remembered for the list.
+static void studyRememberCount(const char* path, int topics, int cards) {
+  for (int c = 0; c < stCountCacheUsed; c++) {
+    if (strcmp(stCountCache[c].path, path) == 0) {
+      stCountCache[c].topics = (uint16_t)topics;
+      stCountCache[c].cards = (uint16_t)cards;
+      return;
+    }
+  }
+  if (stCountCacheUsed >= ST_MAX_SUBJECTS) return;
+  strncpy(stCountCache[stCountCacheUsed].path, path, ST_PATH_LEN - 1);
+  stCountCache[stCountCacheUsed].path[ST_PATH_LEN - 1] = 0;
+  stCountCache[stCountCacheUsed].topics = (uint16_t)topics;
+  stCountCache[stCountCacheUsed].cards = (uint16_t)cards;
+  stCountCacheUsed++;
 }
 
 static bool studyStartsWith(const char* s, const char* prefix) {
@@ -182,7 +342,10 @@ static void studyScanStream(File& f, int* topics, int* cards, char* title, int t
 
 bool studyScanFile(const char* path, int* topics, int* cards) {
   File f = SD.open(path, FILE_READ);
-  if (!f) return false;
+  if (!f) {
+    Serial.printf("[W][study] cannot open %s\n", path);
+    return false;
+  }
   studyScanStream(f, topics, cards, nullptr, 0);
   f.close();
   return true;
@@ -195,35 +358,28 @@ int studySubjectCount() { return stSubjectCount; }
 
 void studyRefreshSubjects() {
   stSubjectCount = 0;
-  // The card is mounted at boot; if it was missing then, trying again here means
-  // a card pushed in later works after a RELOAD instead of a reboot.
+  // The card is mounted at boot; retrying once here means a card pushed in
+  // later works after a RELOAD instead of a reboot.  The bus itself is left as
+  // the boot code configured it.
+  if (!sdReady && !stMountRetried) {
+    stMountRetried = true;
+    sdReady = SD.begin(SD_CS, SPI, SD_SPI_HZ) || SD.begin(SD_CS, SPI, 4000000);
+    Serial.printf("[I][study] remount -> %s\n", sdReady ? "ok" : "failed");
+  }
   if (!sdReady) {
-    SPI.begin(SD_CLK, SD_MISO, SD_MOSI, SD_CS);
-    sdReady = SD.begin(SD_CS, SPI, SD_SPI_HZ);
-    if (!sdReady) sdReady = SD.begin(SD_CS, SPI, 4000000);
-    if (!sdReady) return;
+    Serial.println("[I][study] no card");
+    return;
   }
 
-  File dir = SD.open(ST_DIR);
-  if (!dir || !dir.isDirectory()) return;
-
-  File entry = dir.openNextFile();
-  while (entry && stSubjectCount < ST_MAX_SUBJECTS) {
-    if (!entry.isDirectory()) {
-      const char* path = entry.name();
-      if (path && studyIsNoteFile(path)) {
-        StudySubject& s = stSubjects[stSubjectCount];
-        memset(&s, 0, sizeof(s));
-        strncpy(s.path, path, ST_PATH_LEN - 1);
-        s.path[ST_PATH_LEN - 1] = 0;
-        studyNameFromPath(s.path, s.name, ST_NAME_LEN);
-        stSubjectCount++;
-      }
-    }
-    entry.close();
-    entry = dir.openNextFile();
+  // Listing a folder only stats the entries: no note is read here, so opening
+  // the app is immediate however long the notes are.
+  studyListDir(ST_DIR);
+  stFromCardRoot = false;
+  if (stSubjectCount == 0) {
+    // Notes dropped straight onto the card instead of into /study still work.
+    studyListDir("/");
+    stFromCardRoot = stSubjectCount > 0;
   }
-  dir.close();
 
   // Alphabetical order keeps the list stable between visits even if the card
   // hands the files back in a different order.
@@ -237,23 +393,7 @@ void studyRefreshSubjects() {
     stSubjects[j + 1] = key;
   }
 
-  // Counts and the optional "# Title" line come from one pass over each file.
-  for (int i = 0; i < stSubjectCount; i++) {
-    int topics = 0, cards = 0;
-    char title[ST_NAME_LEN];
-    title[0] = 0;
-    File f = SD.open(stSubjects[i].path, FILE_READ);
-    if (f) {
-      studyScanStream(f, &topics, &cards, title, ST_NAME_LEN);
-      f.close();
-    }
-    stSubjects[i].topics = (uint16_t)topics;
-    stSubjects[i].cards = (uint16_t)cards;
-    if (title[0]) {
-      strncpy(stSubjects[i].name, title, ST_NAME_LEN - 1);
-      stSubjects[i].name[ST_NAME_LEN - 1] = 0;
-    }
-  }
+  Serial.printf("[I][study] %d notes from %s\n", stSubjectCount, stFromCardRoot ? "card root" : ST_DIR);
 }
 
 // ==========================================
@@ -261,6 +401,7 @@ void studyRefreshSubjects() {
 // ==========================================
 static void studyResetDocument() {
   stLineCount = 0;
+  stNonAsciiDropped = false;
   stPoolUsed = 0;
   stTopicCount = 0;
   stCardCount = 0;
@@ -277,13 +418,22 @@ static void studyAddLine(const char* text, int len, uint8_t style) {
     stTruncated = true;
     return;
   }
-  if (stPoolUsed + len + 1 > ST_BUF_BYTES) {
+  // Only ASCII reaches the panel: the fonts have no other glyphs, so a byte
+  // above 0x7F is dropped and reported instead of drawn as garbage.
+  char clean[ST_WRAP + 1];
+  int n = studyToAscii(text, len, clean, len + 1, &stNonAsciiDropped);
+  if (n == 0 && len > 0) {
+    // The whole line was non-ASCII (a Sinhala-only heading, say): keep the gap
+    // so the page still has a shape.
+    if (style == ST_BLANK) return;
+  }
+  if (stPoolUsed + n + 1 > ST_BUF_BYTES) {
     stTruncated = true;
     return;
   }
   stLineOff[stLineCount] = (uint16_t)stPoolUsed;
-  memcpy(stPool + stPoolUsed, text, len);
-  stPoolUsed += len;
+  if (n > 0) memcpy(stPool + stPoolUsed, clean, n);
+  stPoolUsed += n;
   stPool[stPoolUsed++] = 0;
   stLineStyle[stLineCount] = style;
   stLineCount++;
@@ -302,6 +452,20 @@ static void studyWrapLine(const char* text, uint8_t style, int indent, int first
     studyAddLine("", 0, ST_BLANK);
     return;
   }
+
+  // Fold to ASCII first so the wrap width matches what will be drawn: a byte
+  // count of UTF-8 Sinhala would be roughly three times the glyphs.
+  char ascii[256];
+  bool dropped = false;
+  int asciiLen = studyToAscii(text, len, ascii, (int)sizeof(ascii), &dropped);
+  if (dropped) stNonAsciiDropped = true;
+  if (asciiLen == 0) {
+    studyAddLine("", 0, ST_BLANK);
+    return;
+  }
+  text = ascii;
+  len = asciiLen;
+  while (lead < len && text[lead] == ' ') lead++;
 
   int lineNo = 0;
   int pos = 0;
@@ -427,9 +591,22 @@ static bool studyLoadSubject(int index) {
 
   char line[256];
   int n = 0;
-  while (f.available()) {
+  long bytes = 0;
+  unsigned long started = millis();
+  // Read until the driver says there is nothing left.  The byte counter bounds
+  // the work and yield() keeps the rest of the system (and the task watchdog)
+  // alive while a long note is being pulled off a slow card.
+  for (;;) {
     int c = f.read();
     if (c < 0) break;
+    if ((++bytes & 1023) == 0) {
+      yield();
+      if (millis() - started > ST_LOAD_BUDGET_MS) {
+        Serial.printf("[W][study] read budget hit after %ld bytes\n", bytes);
+        stTruncated = true;
+        break;
+      }
+    }
     if (c == '\n') {
       line[n] = 0;
       studyHandleRawLine(line);
@@ -455,6 +632,15 @@ static bool studyLoadSubject(int index) {
 
   stLineOff[stLineCount] = (uint16_t)stPoolUsed;
   stLoaded = stLineCount > 0;
+  Serial.printf("[I][study] %s: %ld bytes -> %d lines, %d topics, %d cards%s\n",
+                stSubjects[index].path, bytes, stLineCount, stTopicCount, stCardCount,
+                stTruncated ? " (truncated)" : "");
+  if (stSubject >= 0 && stSubject < stSubjectCount) {
+    stSubjects[stSubject].topics = (uint16_t)stTopicCount;
+    stSubjects[stSubject].cards = (uint16_t)stCardCount;
+    stSubjects[stSubject].counted = true;
+    studyRememberCount(stSubjects[stSubject].path, stTopicCount, stCardCount);
+  }
   return stLoaded;
 }
 
@@ -551,7 +737,13 @@ static void drawStudySubjects() {
     tft.setTextSize(1);
     tft.setTextColor(MUTED_COLOR);
     tft.setCursor(16, y + 24);
-    tft.print(String(stSubjects[i].topics) + " topics   " + String(stSubjects[i].cards) + " cards");
+    if (stSubjects[i].counted) {
+      tft.print(String(stSubjects[i].topics) + " topics   " + String(stSubjects[i].cards) + " cards");
+    } else {
+      // Counting topics means reading the note, which is exactly the work to
+      // avoid on the way in, so the list shows the size and opens instantly.
+      tft.print(String(stSubjects[i].sizeKB) + " KB   tap to open");
+    }
     // Right hand action: jump straight to the flashcards of this subject.
     drawModernButton(252, y + 5, 54, 24, RADIUS_SM, SURFACE_HI, false);
     printCentered("CARDS", 279, y + 18, NULL, ACCENT_COLOR);
@@ -562,7 +754,8 @@ static void drawStudySubjects() {
   tft.fillRect(0, ST_PAGE_BOTTOM, 320, 240 - ST_PAGE_BOTTOM, BG_COLOR);
   drawModernButton(8, 208, 104, 26, RADIUS_SM, SURFACE_HI, false);
   printCentered("RELOAD", 60, 225, &FreeSans9pt7b, TEXT_COLOR);
-  printRight(String(stSubjectCount) + (stSubjectCount == 1 ? " subject" : " subjects"), 254, 225, NULL, MUTED_COLOR);
+  printRight(stFromCardRoot ? "from card root" : String(stSubjectCount) + (stSubjectCount == 1 ? " subject" : " subjects"),
+             254, 225, NULL, stFromCardRoot ? ACCENT_COLOR : MUTED_COLOR);
   studyDrawScrollChrome(stListScrollMax > 0);
 }
 
@@ -654,12 +847,20 @@ static void drawStudyReader() {
 
   // Footer: current topic, read position, progress bar and the scroll control.
   tft.fillRect(0, ST_PAGE_BOTTOM, 320, 240 - ST_PAGE_BOTTOM, BG_COLOR);
-  String topicName = (topTopic >= 0) ? String(stPool + stLineOff[topTopic]) : String("Start of note");
-  if (topicName.length() > 28) topicName = topicName.substring(0, 27) + ".";
   tft.setTextSize(1);
-  tft.setTextColor(MUTED_COLOR);
-  tft.setCursor(8, 205);
-  tft.print(topicName);
+  if (stNonAsciiDropped) {
+    // Actionable, not decoration: this note needs converting before it can be
+    // read on the panel.
+    tft.setTextColor(DEL_COLOR);
+    tft.setCursor(8, 205);
+    tft.print("non-ASCII text removed - see tools/mkstudy.py");
+  } else {
+    String topicName = (topTopic >= 0) ? String(stPool + stLineOff[topTopic]) : String("Start of note");
+    if (topicName.length() > 28) topicName = topicName.substring(0, 27) + ".";
+    tft.setTextColor(MUTED_COLOR);
+    tft.setCursor(8, 205);
+    tft.print(topicName);
+  }
   int maxScroll = max(1, stContentH - ST_PAGE_H);
   int pct = (int)((float)stScrollY * 100.0f / (float)maxScroll);
   pct = constrain(pct, 0, 100);
@@ -842,6 +1043,18 @@ static void studyBackToHome() {
 
 // Leaving the app drops the note and returns to the subject list, so re-entering
 // (or a wake from the screensaver) can never show a half-loaded document.
+// Drawn immediately when the app opens, before the card is touched, so a slow
+// or empty card shows the app responding instead of a blank screen.
+void studyEnterApp() {
+  currentState = STATE_STUDY;
+  stView = STUDY_VIEW_SUBJECTS;
+  tft.fillScreen(BG_COLOR);
+  drawScreenHeader("STUDY", true);
+  printCentered("Reading the card...", 160, 108, &FreeSans9pt7b, MUTED_COLOR);
+  studyRefreshSubjects();
+  drawStudyScreen(true);
+}
+
 void studyRelease() {
   stLoaded = false;
   stSubject = -1;
@@ -850,6 +1063,7 @@ void studyRelease() {
   stListScrollMax = 0;
   stDeckCount = 0;
   stDeckPos = 0;
+  stCountCacheUsed = 0;
   studyResetDocument();
 }
 
@@ -879,7 +1093,9 @@ static bool studyScrollButtons(int sx, int sy) {
 static void handleStudySubjectsTouch(int sx, int sy) {
   if (inRect(sx, sy, 8, 208, 104, 26)) {
     flashButton(8, 208, 104, 26, RADIUS_SM);
-    showToast("Reading the card...");
+    tft.fillScreen(BG_COLOR);
+    drawScreenHeader("STUDY", true);
+    printCentered("Reading the card...", 160, 108, &FreeSans9pt7b, MUTED_COLOR);
     studyRefreshSubjects();
     drawStudyScreen(true);
     return;

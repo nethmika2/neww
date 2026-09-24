@@ -29,14 +29,18 @@ enum StudyView {
   STUDY_VIEW_CARDS
 };
 
-// Counts topics and flashcards in one note file without loading it (used by the
-// subject list).  Returns false when the file cannot be opened.
+// Counts topics and flashcards in one note file by streaming it (used by the
+// host tests and tools).  Returns false when the file cannot be opened.
 bool studyScanFile(const char* path, int* topics, int* cards);
-// Re-reads /study and rebuilds the subject list.  Called on entry and by the
-// RELOAD action.
+// Re-lists the notes folder (falling back to the card root) and rebuilds the
+// subject list.  Called on entry and by the RELOAD action; it only stats
+// directory entries, so it is fast even with large notes.
 void studyRefreshSubjects();
 int studySubjectCount();
 
+// Entry point used by the home screen: paints the app, reads the card and
+// draws the subject list.  Never blocks for more than a bounded time.
+void studyEnterApp();
 void drawStudyScreen(bool fullWipe);
 void handleStudyTouch(bool touched, int sx, int sy);
 // Frees the text pool; called when the app is left so the RAM is not held for

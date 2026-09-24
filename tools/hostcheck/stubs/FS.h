@@ -15,6 +15,14 @@
 namespace fs {
 class File;
 
+// Real ESP32 cores differ on this: some return the full path from File::name(),
+// others only the base name.  The firmware has to cope with both, so the stub
+// can be switched between them from the tests.
+inline bool &nameBaseOnly() {
+  static bool baseOnly = false;
+  return baseOnly;
+}
+
 class FS {
  public:
   File open(const char *path, const char *mode = FILE_READ);
@@ -51,16 +59,24 @@ class File {
   int available() const { return (int)(size() - pos_); }
   // Like the ESP32 core, name() hands back the whole path; the sketch has to
   // strip the folder and extension itself.
-  const char *name() const { return path_.c_str(); }
+  const char *name() const {
+    if (!nameBaseOnly()) return path_.c_str();
+    size_t slash = path_.find_last_of('/');
+    return slash == std::string::npos ? path_.c_str() : path_.c_str() + slash + 1;
+  }
   bool isDirectory() const { return isDir_; }
+  // Walks the entries directly below this handle.  Both "/" and "/study" work:
+  // the separator is normalised rather than assumed.
   File openNextFile(const char * = FILE_READ) {
     if (!isDir_ || !fs_) return File();
+    std::string base = path_;
+    if (base.empty() || base.back() != '/') base += '/';
     const std::vector<std::string> &all = fs_->keys();
     while ((int)nextIdx_ < (int)all.size()) {
       const std::string &p = all[nextIdx_++];
-      if (p.size() <= path_.size() + 1) continue;
-      if (p.compare(0, path_.size(), path_) != 0 || p[path_.size()] != '/') continue;
-      if (p.find('/', path_.size() + 1) != std::string::npos) continue;  // nested
+      if (p.size() <= base.size()) continue;
+      if (p.compare(0, base.size(), base) != 0) continue;
+      if (p.find('/', base.size()) != std::string::npos) continue;  // nested
       return File(fs_, p);
     }
     return File();
@@ -117,7 +133,9 @@ inline File FS::open(const char *path, const char *mode) {
   (void)mode;
   if (!path) return File();
   if (!files_.count(path)) {
-    // Not a file: it may still be a folder that holds some.
+    // Not a file: it may still be a folder that holds some.  "/" is the card
+    // root, so it is a folder whenever anything is on the card.
+    if (strcmp(path, "/") == 0 && !order_.empty()) return File(this, path, true);
     std::string prefix = std::string(path) + "/";
     for (const std::string &k : order_) {
       if (k.compare(0, prefix.size(), prefix) == 0) return File(this, path, true);
