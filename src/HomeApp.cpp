@@ -7,13 +7,15 @@
 #include "PomodoroApp.h"
 #include "SettingsApp.h"
 #include "PomodoroStore.h"
+#include "StudyApp.h"
 
-// The header keeps the clock on the left and the gear on the right; the three
-// app cards sit on one row, then a quiet status line at the bottom.
+// The header keeps the clock on the left and the gear on the right; the four
+// app cards sit on one row, then a quiet status line at the bottom.  Four
+// cards share the 300 px content width: 4 x 69 + 3 x 8 gap.
 static const int HOME_CARD_Y = 58;
-static const int HOME_CARD_W = 96;
+static const int HOME_CARD_W = 69;
 static const int HOME_CARD_H = 112;
-static const int HOME_CARD_X[3] = { 12, 116, 220 };
+static const int HOME_CARD_X[4] = { 10, 87, 164, 241 };
 
 void drawHomeClock() {
   int h, m;
@@ -61,16 +63,22 @@ void drawHomeScreen() {
   const int iconCY = HOME_CARD_Y + 42;
 
   drawIconTile(HOME_CARD_X[0], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H, RADIUS_LG, F1_COLOR);
-  printCentered("f(x)", HOME_CARD_X[0] + (HOME_CARD_W / 2), iconCY + 9, &FreeSansBold18pt7b, F1_COLOR);
+  printCentered("f(x)", HOME_CARD_X[0] + (HOME_CARD_W / 2), iconCY + 7, &FreeSansBold18pt7b, F1_COLOR);
   printCentered("Grapher", HOME_CARD_X[0] + (HOME_CARD_W / 2), HOME_CARD_Y + 86, &FreeSans9pt7b, TEXT_COLOR);
 
   drawIconTile(HOME_CARD_X[1], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H, RADIUS_LG, F2_COLOR);
-  drawWaveIcon(HOME_CARD_X[1] + (HOME_CARD_W / 2), iconCY, 20, 12, F2_COLOR);
+  drawWaveIcon(HOME_CARD_X[1] + (HOME_CARD_W / 2), iconCY, 16, 10, F2_COLOR);
   printCentered("Music", HOME_CARD_X[1] + (HOME_CARD_W / 2), HOME_CARD_Y + 86, &FreeSans9pt7b, TEXT_COLOR);
 
   drawIconTile(HOME_CARD_X[2], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H, RADIUS_LG, ACCENT_COLOR);
-  drawClockIcon(HOME_CARD_X[2] + (HOME_CARD_W / 2), iconCY, 15, ACCENT_COLOR);
+  drawClockIcon(HOME_CARD_X[2] + (HOME_CARD_W / 2), iconCY, 13, ACCENT_COLOR);
   printCentered("Timer", HOME_CARD_X[2] + (HOME_CARD_W / 2), HOME_CARD_Y + 86, &FreeSans9pt7b, TEXT_COLOR);
+
+  // Study: the card count is on the tile itself, so the notes are one tap away
+  // and the home screen still says whether anything is on the card.
+  drawIconTile(HOME_CARD_X[3], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H, RADIUS_LG, F4_COLOR);
+  drawBookIcon(HOME_CARD_X[3] + (HOME_CARD_W / 2), iconCY, 22, F4_COLOR);
+  printCentered("Study", HOME_CARD_X[3] + (HOME_CARD_W / 2), HOME_CARD_Y + 86, &FreeSans9pt7b, TEXT_COLOR);
 
   drawHomeStatus();
 }
@@ -130,6 +138,12 @@ void handleHomeTouch(bool touched, int sx, int sy) {
     currentState = STATE_POMODORO;
     tft.fillScreen(BG_COLOR);
     drawPomodoroScreen(true);
+  } else if (inRect(sx, sy, HOME_CARD_X[3], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H)) {
+    flashButton(HOME_CARD_X[3], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H, RADIUS_LG);
+    currentState = STATE_STUDY;
+    studyRefreshSubjects();
+    tft.fillScreen(BG_COLOR);
+    drawStudyScreen(true);
   } else if (inRect(sx, sy, 280, 0, 40, 30)) {
     flashButton(280, 3, 34, 24, RADIUS_SM);
     currentState = STATE_SETTINGS;

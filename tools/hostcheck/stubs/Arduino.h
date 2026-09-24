@@ -137,6 +137,17 @@ class String {
   int indexOf(char c, unsigned int from) const { size_t p = s_.find(c, from); return p == std::string::npos ? -1 : (int)p; }
   int indexOf(const String &t, unsigned int from) const { size_t p = s_.find(t.c_str(), from); return p == std::string::npos ? -1 : (int)p; }
   int lastIndexOf(char c) const { size_t p = s_.rfind(c); return p == std::string::npos ? -1 : (int)p; }
+  int lastIndexOf(char c, unsigned int from) const {
+    if (s_.empty()) return -1;
+    if (from >= s_.size()) from = (unsigned int)s_.size() - 1;
+    size_t p = s_.rfind(c, from);
+    return p == std::string::npos ? -1 : (int)p;
+  }
+  int lastIndexOf(const char *t, unsigned int from) const {
+    if (from > s_.size()) from = (unsigned int)s_.size();
+    size_t p = s_.rfind(t, from);
+    return p == std::string::npos ? -1 : (int)p;
+  }
   bool startsWith(const String &t) const { return s_.rfind(t.c_str(), 0) == 0; }
   bool startsWith(const char *t) const { return s_.rfind(t, 0) == 0; }
   bool startsWith(const String &t, unsigned int off) const { return off <= s_.size() && s_.rfind(t.s_, off) == off; }

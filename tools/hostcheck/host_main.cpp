@@ -6,6 +6,7 @@
 // ---------------------------------------------------------------------------
 #include <cstdio>
 #include <cstring>
+#include <unistd.h>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -33,6 +34,7 @@
 #include "AudioApp.h"
 #include "MathEngine.h"
 #include "Storage.h"
+#include "StudyApp.h"
 #include "esp_avrc_api.h"
 #include "BluetoothA2DPSource.h"
 
@@ -45,6 +47,7 @@ void hostAvrcReset();
 void hostMakeWav(const char *path, int seconds, int freq, uint32_t sampleRate);
 void hostMakeFile(const char *path, const char *text);
 
+static bool hostDrewText(const char *fragment);
 static int failures = 0;
 static int checks = 0;
 static const char *currentSuite = "";
@@ -589,9 +592,199 @@ static void testEarbuds() {
   CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED), 0);
 }
 
+// True when the last recorded frame contains this fragment in any drawn text.
+static bool hostDrewText(const char *fragment) {
+  for (const std::string &line : HostDraw::log()) {
+    if (line.rfind("text ", 0) == 0 && line.find(fragment) != std::string::npos) return true;
+  }
+  return false;
+}
+
 // ===========================================================================
 // persistence
 // ===========================================================================
+// ===========================================================================
+// study notes: the SD card reader, the note parser and the flashcard deck
+// ===========================================================================
+// Walks up from the harness to the firmware root, so the sample notes in
+// sd-card/study are the same files a user copies onto their card.
+static std::string fwRoot() {
+  char buf[4096];
+  if (!getcwd(buf, sizeof(buf))) return std::string(".");
+  std::string dir(buf);
+  for (int i = 0; i < 6; i++) {
+    std::string probe = dir + "/platformio.ini";
+    FILE *f = fopen(probe.c_str(), "r");
+    if (f) {
+      fclose(f);
+      return dir;
+    }
+    size_t slash = dir.find_last_of('/');
+    if (slash == std::string::npos || slash == 0) break;
+    dir = dir.substr(0, slash);
+  }
+  return std::string(".");
+}
+
+static std::string readWholeFile(const std::string &path) {
+  std::string out;
+  FILE *f = fopen(path.c_str(), "r");
+  if (!f) return out;
+  char buf[4096];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  fclose(f);
+  return out;
+}
+
+// Installs the shipped sample notes into the fake card.  Returns how many were
+// found, so a missing repo fixture cannot silently pass the suite.
+static int installSampleNotes() {
+  std::string dir = fwRoot() + "/sd-card/study";
+  const char *names[] = {"analytical-chemistry.txt", "optics.txt"};
+  int installed = 0;
+  for (const char *n : names) {
+    std::string text = readWholeFile(dir + "/" + n);
+    if (text.empty()) continue;
+    hostMakeFile((std::string("/study/") + n).c_str(), text.c_str());
+    installed++;
+  }
+  return installed;
+}
+
+static void testStudy() {
+  SUITE("study");
+  SD.reset();
+  int installed = installSampleNotes();
+  CHECK_EQ(installed, 2);
+  sdReady = true;
+
+  studyRelease();
+  studyRefreshSubjects();
+  CHECK_EQ(studySubjectCount(), 2);
+
+  // Titles come from the "# " line, so a file may be named anything.
+  // Subjects are sorted alphabetically for a stable list.
+  int topics = 0, cards = 0;
+  CHECK(studyScanFile("/study/optics.txt", &topics, &cards));
+  CHECK_EQ(topics, 4);
+  CHECK_EQ(cards, 5);            // 4 headings + 1 Q:/A: pair
+  CHECK(studyScanFile("/study/analytical-chemistry.txt", &topics, &cards));
+  CHECK_EQ(topics, 4);
+  CHECK_EQ(cards, 5);
+
+  // The list screen must render, open the first subject on a row tap and put
+  // its headings on the table of contents.
+  currentState = STATE_STUDY;
+  HostDraw::reset();
+  drawStudyScreen(true);
+  CHECK(hostDrewText("STUDY"));
+  CHECK(hostDrewText("Analytical Chem"));
+  CHECK(hostDrewText("4 topics"));
+  CHECK(hostDrewText("5 cards"));
+
+  handleStudyTouch(true, 60, 57);                 // first row, away from CARDS
+  CHECK(hostDrewText("Titration essentials"));
+
+  // A heading opens the reader at that point in the note.
+  HostDraw::reset();
+  handleStudyTouch(true, 60, 51);                 // first topic row
+  CHECK(hostDrewText("Standard solution"));
+
+  // Scrolling moves the text; the down control is in the bottom right corner.
+  HostDraw::reset();
+  handleStudyTouch(true, 280, 230);               // the DOWN control, bottom right
+  CHECK(hostDrewText("Concordant titres"));
+  HostDraw::reset();
+  handleStudyTouch(true, 280, 213);               // and the UP control brings it back
+  CHECK(hostDrewText("Titration essentials"));
+
+  // The flashcards of a subject are one tap from the list.
+  handleStudyTouch(true, 20, 12);                 // back to the topics
+  handleStudyTouch(true, 20, 12);                 // back to the subjects
+  HostDraw::reset();
+  handleStudyTouch(true, 279, 62);                // CARDS button on row 1
+  CHECK(hostDrewText("CARD 1 / 5"));
+  CHECK(hostDrewText("tap SHOW ANSWER"));
+  // Cards are opened in note order, so the first one is the first heading.
+  CHECK(hostDrewText("Titration essentials"));
+  HostDraw::reset();
+  handleStudyTouch(true, 160, 185);               // SHOW ANSWER
+  CHECK(hostDrewText("SHOW QUESTION"));           // the button flipped
+  CHECK(hostDrewText("CARD 1 / 5  -  ANSWER"));
+  HostDraw::reset();
+  HostDraw::reset();
+  handleStudyTouch(true, 280, 192);               // card scroll DOWN
+  CHECK(!hostDrewText("A titration finds the unknown"));
+  HostDraw::reset();
+  handleStudyTouch(true, 280, 175);               // and UP brings the top back
+  CHECK(hostDrewText("A titration finds the unknown"));
+  HostDraw::reset();
+  handleStudyTouch(true, 264, 220);               // NEXT
+  CHECK(hostDrewText("CARD 2 / 5"));
+  HostDraw::reset();
+  handleStudyTouch(true, 56, 220);                // SHUFFLE keeps the deck size
+  CHECK(hostDrewText(" / 5"));
+
+  // Leaving the app releases the pool and returns to the home screen.
+  handleStudyTouch(true, 20, 12);
+  handleStudyTouch(true, 20, 12);
+  CHECK_EQ((int)currentState, (int)STATE_STUDY);
+  handleStudyTouch(true, 20, 12);
+  CHECK_EQ((int)currentState, (int)STATE_HOME);
+
+  // A card with no /study folder reports it instead of drawing an empty list.
+  SD.reset();
+  studyRefreshSubjects();
+  CHECK_EQ(studySubjectCount(), 0);
+  HostDraw::reset();
+  drawStudyScreen(true);
+  CHECK(hostDrewText("No notes found"));
+
+  // No card at all is a different, equally clear message.
+  sdReady = false;
+  HostDraw::reset();
+  drawStudyScreen(true);
+  CHECK(hostDrewText("No SD card"));
+  CHECK(hostDrewText("RELOAD"));                  // retries the mount
+  handleStudyTouch(true, 60, 220);                // ... and re-reads the card
+  CHECK(hostDrewText("RELOAD"));
+  sdReady = true;
+
+  // A note larger than the reader's pool is cut, and says so on screen instead
+  // of silently losing the end of the document.
+  {
+    std::string big = "# Oversized note\n## First topic\n";
+    for (int i = 0; i < 900; i++) big += "- a line of revision text that fills the pool\n";
+    SD.reset();
+    hostMakeFile("/study/big.txt", big.c_str());
+    studyRefreshSubjects();
+    CHECK_EQ(studySubjectCount(), 1);
+    handleStudyTouch(true, 60, 57);               // open it
+    handleStudyTouch(true, 60, 51);               // first topic
+    CHECK(hostDrewText("(truncated - split this note)"));
+  }
+
+  // The parser handles the markers, wrapping and the flashcard pairs.
+  SD.reset();
+  hostMakeFile("/study/edge.txt",
+               "# Edge cases\n"
+               "## Only heading\n"
+               "- a bullet that is quite long and should wrap onto a second line for sure\n"
+               "Q: pair one\nA: answer one\n"
+               "Q: pair two\nA: answer two\n"
+               "## Second heading\nbody\n");
+  studyRefreshSubjects();
+  CHECK_EQ(studySubjectCount(), 1);
+  CHECK(studyScanFile("/study/edge.txt", &topics, &cards));
+  CHECK_EQ(topics, 2);
+  CHECK_EQ(cards, 4);            // 2 headings + 2 Q:/A: pairs
+  SD.reset();
+  CHECK_EQ(installSampleNotes(), 2);
+  studyRefreshSubjects();
+  CHECK_EQ(studySubjectCount(), 2);
+}
+
 static void testPersistence() {
   SUITE("persistence");
   resetPomodoroState();
@@ -764,6 +957,45 @@ static void testRendering() {
     }
   }
 
+  // Study notes: list, table of contents, reader and the flashcard drill, all
+  // driven through the touch handler so the zones are exercised too.
+  currentState = STATE_STUDY;
+  SD.reset();
+  installSampleNotes();
+  sdReady = true;
+  randomSeed(7);
+  studyRelease();
+  studyRefreshSubjects();
+  HostDraw::reset();
+  drawStudyScreen(true);
+  HostDraw::dump("shots/18-study-subjects.txt");
+  handleStudyTouch(true, 60, 57);                 // open the first subject
+  HostDraw::reset();
+  drawStudyScreen(true);
+  HostDraw::dump("shots/19-study-topics.txt");
+  handleStudyTouch(true, 60, 51);                 // open the first topic
+  HostDraw::reset();
+  drawStudyScreen(true);
+  HostDraw::dump("shots/20-study-reader.txt");
+  handleStudyTouch(true, 280, 230);               // scroll a half page down
+  HostDraw::reset();
+  drawStudyScreen(true);
+  HostDraw::dump("shots/21-study-reader-scrolled.txt");
+  handleStudyTouch(true, 20, 12);                 // back to the topics
+  handleStudyTouch(true, 20, 12);                 // back to the subjects
+  handleStudyTouch(true, 279, 62);                // flashcards for subject 1
+  HostDraw::reset();
+  drawStudyScreen(true);
+  HostDraw::dump("shots/22-study-cards.txt");
+  handleStudyTouch(true, 160, 185);               // SHOW ANSWER
+  HostDraw::reset();
+  drawStudyScreen(true);
+  HostDraw::dump("shots/23-study-cards-answer.txt");
+  handleStudyTouch(true, 20, 12);
+  handleStudyTouch(true, 20, 12);
+  handleStudyTouch(true, 20, 12);                 // leave the app
+  HostDraw::reset();
+
   // The name keyboard in both modes: the letter page is QWERTY and the number
   // page holds the digits and punctuation.
   currentState = STATE_TEXT_KBD;
@@ -789,6 +1021,7 @@ int main() {
   testCalibration();
   testEarbuds();
   testPersistence();
+  testStudy();
   testRendering();
 
   printf("\n%d checks, %d failures\n", checks, failures);

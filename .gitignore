@@ -8,3 +8,4 @@
 tools/hostcheck/build/
 tools/hostcheck/shots/
 tools/hostcheck/png/
+__pycache__/

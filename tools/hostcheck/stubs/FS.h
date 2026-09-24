@@ -42,14 +42,29 @@ class File {
     if (f && f->files_.count(p)) { buf_ = std::make_shared<std::vector<uint8_t>>(f->files_[p]); }
     else buf_ = nullptr;
   }
-  operator bool() const { return fs_ != nullptr && buf_ != nullptr; }
+  // A directory handle: no bytes, but openNextFile() walks the entries below it.
+  File(FS *f, const std::string &p, bool isDir) : fs_(f), path_(p), isDir_(isDir) {}
+  operator bool() const { return fs_ != nullptr && (buf_ != nullptr || isDir_); }
   bool operator==(bool b) const { return (bool)*this == b; }
   size_t size() const { return buf_ ? buf_->size() : 0; }
   size_t position() const { return pos_; }
   int available() const { return (int)(size() - pos_); }
+  // Like the ESP32 core, name() hands back the whole path; the sketch has to
+  // strip the folder and extension itself.
   const char *name() const { return path_.c_str(); }
-  bool isDirectory() { return false; }
-  File openNextFile(const char * = FILE_READ) { return File(); }
+  bool isDirectory() const { return isDir_; }
+  File openNextFile(const char * = FILE_READ) {
+    if (!isDir_ || !fs_) return File();
+    const std::vector<std::string> &all = fs_->keys();
+    while ((int)nextIdx_ < (int)all.size()) {
+      const std::string &p = all[nextIdx_++];
+      if (p.size() <= path_.size() + 1) continue;
+      if (p.compare(0, path_.size(), path_) != 0 || p[path_.size()] != '/') continue;
+      if (p.find('/', path_.size() + 1) != std::string::npos) continue;  // nested
+      return File(fs_, p);
+    }
+    return File();
+  }
   void close() {}
   int read() { return pos_ < size() ? (*buf_)[pos_++] : -1; }
   int peek() { return pos_ < size() ? (*buf_)[pos_] : -1; }
@@ -93,6 +108,8 @@ class File {
   FS *fs_;
   std::string path_;
   std::shared_ptr<std::vector<uint8_t>> buf_;
+  bool isDir_ = false;
+  size_t nextIdx_ = 0;
   size_t pos_ = 0;
 };
 
@@ -100,15 +117,27 @@ inline File FS::open(const char *path, const char *mode) {
   (void)mode;
   if (!path) return File();
   if (!files_.count(path)) {
+    // Not a file: it may still be a folder that holds some.
+    std::string prefix = std::string(path) + "/";
+    for (const std::string &k : order_) {
+      if (k.compare(0, prefix.size(), prefix) == 0) return File(this, path, true);
+    }
     if (strcmp(mode, FILE_READ) == 0) return File();
     files_[path] = std::vector<uint8_t>();
-    total_ += 0;
     order_.push_back(path);
   }
   return File(this, path);
 }
 inline File FS::open(const String &path, const char *mode) { return open(path.c_str(), mode); }
-inline bool FS::exists(const char *path) { return path && files_.count(path) > 0; }
+inline bool FS::exists(const char *path) {
+  if (!path) return false;
+  if (files_.count(path)) return true;
+  std::string prefix = std::string(path) + "/";
+  for (const std::string &k : order_) {
+    if (k.compare(0, prefix.size(), prefix) == 0) return true;
+  }
+  return false;
+}
 inline bool FS::remove(const char *path) { return path && files_.erase(path) > 0; }
 inline bool FS::rename(const char *from, const char *to) {
   if (!from || !to || !files_.count(from)) return false;

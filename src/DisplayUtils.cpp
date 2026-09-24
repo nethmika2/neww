@@ -13,6 +13,7 @@ void drawMusicList();
 void drawCalibrationScreen();
 void drawPomodoroScreen(bool fullWipe);
 void drawTextKeyboardScreen(bool fullWipe);
+void drawStudyScreen(bool fullWipe);
 
 bool displayActive() {
   return screenOn && !screensaverActive;
@@ -35,6 +36,7 @@ void redrawCurrentScreen() {
   else if (currentState == STATE_CALIBRATE) drawCalibrationScreen();
   else if (currentState == STATE_POMODORO) drawPomodoroScreen(true);
   else if (currentState == STATE_TEXT_KBD) drawTextKeyboardScreen(true);
+  else if (currentState == STATE_STUDY) drawStudyScreen(true);
 }
 
 void setScreenPower(bool on) {
@@ -300,6 +302,19 @@ void drawTrashIcon(int cx, int cy, uint16_t color) {
   tft.drawRect(cx - 5, cy - 4, 11, 10, color);      // body
   tft.drawFastVLine(cx - 2, cy - 2, 6, color);      // ribs
   tft.drawFastVLine(cx + 2, cy - 2, 6, color);
+}
+
+// An open book: two leaves either side of a spine, with a couple of text lines.
+void drawBookIcon(int cx, int cy, int halfW, uint16_t color) {
+  int top = cy - (halfW / 2);
+  int h = halfW;
+  tft.fillRect(cx - halfW, top, halfW - 2, h, color);
+  tft.fillRect(cx + 2, top, halfW - 2, h, color);
+  tft.drawFastVLine(cx, top - 2, h + 4, color);
+  tft.fillRect(cx - halfW + 3, top + 3, halfW - 7, 2, BG_COLOR);
+  tft.fillRect(cx - halfW + 3, top + 8, halfW - 9, 2, BG_COLOR);
+  tft.fillRect(cx + 5, top + 3, halfW - 7, 2, BG_COLOR);
+  tft.fillRect(cx + 5, top + 8, halfW - 9, 2, BG_COLOR);
 }
 
 int drawRadical(int x, int y, int size, uint16_t color) {
