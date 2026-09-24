@@ -315,6 +315,8 @@ def convert(path: str, split: int, sinhala_mode: str = "roman") -> tuple[list[tu
 
     if not title:
         title = os.path.splitext(os.path.basename(path))[0].replace("_", " ").strip().title()
+    if title and title[0].islower():
+        title = title[0].upper() + title[1:]   # e.g. a romanised Sinhala title
 
     # Collapse the runs of blank lines the block handling leaves behind.
     body: list[str] = []

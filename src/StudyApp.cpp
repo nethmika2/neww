@@ -33,6 +33,9 @@ static const char* ST_DIR = "/study";
 // while a long read is in progress.
 static const int ST_MAX_DIR_ENTRIES = 64;
 static const unsigned long ST_DIR_BUDGET_MS = 1500;
+// The budget only starts applying after a handful of entries: a normal /study
+// folder is small, and those notes must always get their real titles.
+static const int ST_DIR_BUDGET_GRACE = 8;
 static const unsigned long ST_LOAD_BUDGET_MS = 2500;
 
 // ==========================================
@@ -245,7 +248,8 @@ static int studyListDir(const char* dir) {
   unsigned long start = millis();
   File entry = handle.openNextFile();
   while (entry) {
-    if (++examined > ST_MAX_DIR_ENTRIES || millis() - start > ST_DIR_BUDGET_MS) {
+    if (++examined > ST_MAX_DIR_ENTRIES ||
+        (examined > ST_DIR_BUDGET_GRACE && millis() - start > ST_DIR_BUDGET_MS)) {
       Serial.printf("[W][study] listing %s truncated after %d entries\n", dir, examined - 1);
       break;
     }
@@ -256,7 +260,7 @@ static int studyListDir(const char* dir) {
         memset(&s, 0, sizeof(s));
         studyMakePath(dir, raw, s.path, ST_PATH_LEN);
         studyNameFromPath(raw, s.name, ST_NAME_LEN);
-        if (millis() - start < ST_DIR_BUDGET_MS) studyReadTitle(s.path, s.name, ST_NAME_LEN);
+        studyReadTitle(s.path, s.name, ST_NAME_LEN);   // one bounded 192-byte read
         uint32_t bytes = (uint32_t)entry.size();
         s.sizeKB = (uint16_t)min(9999UL, (unsigned long)(bytes / 1024UL) + (bytes % 1024 ? 1 : 0));
         for (int c = 0; c < stCountCacheUsed; c++) {

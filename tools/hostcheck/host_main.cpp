@@ -642,7 +642,7 @@ static std::string readWholeFile(const std::string &path) {
 // found, so a missing repo fixture cannot silently pass the suite.
 static int installSampleNotes() {
   std::string dir = fwRoot() + "/sd-card/study";
-  const char *names[] = {"analytical-chemistry.txt", "optics.txt"};
+  const char *names[] = {"analytical-chemistry.txt", "optics.txt", "sinhala.txt"};
   int installed = 0;
   for (const char *n : names) {
     std::string text = readWholeFile(dir + "/" + n);
@@ -657,12 +657,12 @@ static void testStudy() {
   SUITE("study");
   SD.reset();
   int installed = installSampleNotes();
-  CHECK_EQ(installed, 2);
+  CHECK_EQ(installed, 3);
   sdReady = true;
 
   studyRelease();
   studyRefreshSubjects();
-  CHECK_EQ(studySubjectCount(), 2);
+  CHECK_EQ(studySubjectCount(), 3);
 
   // Titles come from the "# " line, so a file may be named anything.
   // Subjects are sorted alphabetically for a stable list.
@@ -771,9 +771,9 @@ static void testStudy() {
     studyRelease();
     SD.reset();
     hostSetNameBaseOnly(true);
-    CHECK_EQ(installSampleNotes(), 2);
+    CHECK_EQ(installSampleNotes(), 3);
     studyRefreshSubjects();
-    CHECK_EQ(studySubjectCount(), 2);
+    CHECK_EQ(studySubjectCount(), 3);
     handleStudyTouch(true, 60, 57);               // open the first subject
     HostDraw::reset();
     handleStudyTouch(true, 60, 51);               // and its first topic
@@ -853,9 +853,9 @@ static void testStudy() {
   CHECK_EQ(topics, 2);
   CHECK_EQ(cards, 4);            // 2 headings + 2 Q:/A: pairs
   SD.reset();
-  CHECK_EQ(installSampleNotes(), 2);
+  CHECK_EQ(installSampleNotes(), 3);
   studyRefreshSubjects();
-  CHECK_EQ(studySubjectCount(), 2);
+  CHECK_EQ(studySubjectCount(), 3);
 }
 
 static void testPersistence() {
@@ -1066,7 +1066,27 @@ static void testRendering() {
   HostDraw::dump("shots/23-study-cards-answer.txt");
   handleStudyTouch(true, 20, 12);
   handleStudyTouch(true, 20, 12);
-  handleStudyTouch(true, 20, 12);                 // leave the app
+  handleStudyTouch(true, 20, 12);
+  // The sample note converted from Sinhala HTML: the reader must show romanised
+  // Latin, never a row of boxes.
+  {
+    studyRelease();
+    SD.reset();
+    installSampleNotes();
+    sdReady = true;
+    studyRefreshSubjects();
+    currentState = STATE_STUDY;
+    handleStudyTouch(true, 60, 97);               // second row: the Sinhala sample
+    handleStudyTouch(true, 60, 51);               // first topic
+    HostDraw::reset();
+    drawStudyScreen(true);
+    HostDraw::dump("shots/24-study-sinhala.txt");
+    studyRelease();
+    SD.reset();
+    installSampleNotes();
+    sdReady = true;
+    studyRefreshSubjects();
+  }
   HostDraw::reset();
 
   // The name keyboard in both modes: the letter page is QWERTY and the number
