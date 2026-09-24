@@ -196,40 +196,44 @@ void applyVolume() {
   audioGainQ8 = (currentVolume * 256) / 100;
 }
 
-// Player layout, top to bottom: title bar, connection pill, track name, seek
-// bar with the elapsed time on the left and the total on the right, then the
-// transport row and a volume row.  Every element sits on the 8 px grid.
+// Player layout: 34 px title bar, an artwork tile with the track name beside
+// it, the seek bar on the 8 px grid, then one transport row.  Left/right of the
+// play button are volume and track buttons, mirrored for symmetry.
+static const int MUS_ART_X = 20;
+static const int MUS_ART_Y = 58;
+static const int MUS_ART_W = 76;
+static const int MUS_ART_H = 76;
+static const int MUS_INFO_X = 108;
 static const int MUS_SEEK_X = 20;
 static const int MUS_SEEK_W = 280;
-static const int MUS_SEEK_Y = 132;
-static const int MUS_PLAY_X = 128;
-static const int MUS_PLAY_Y = 156;
-static const int MUS_PLAY_W = 64;
-static const int MUS_PLAY_H = 64;
+static const int MUS_SEEK_Y = 150;
 static const int MUS_SIDE_W = 48;
 static const int MUS_SIDE_H = 48;
-static const int MUS_VOL_BTN_Y = 156;
+static const int MUS_SIDE_Y = 172;
+static const int MUS_PLAY_X = 128;
+static const int MUS_PLAY_Y = 164;
+static const int MUS_PLAY_W = 64;
+static const int MUS_PLAY_H = 64;
 
 static void drawMusicTransport(bool playing) {
-  drawModernButton(MUS_SEEK_X, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD, SURFACE_COLOR, false);
-  drawMinusIcon(MUS_SEEK_X + (MUS_SIDE_W / 2), MUS_VOL_BTN_Y + (MUS_SIDE_H / 2), TEXT_COLOR);
-  drawModernButton(76, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD, SURFACE_COLOR, false);
-  drawSkipRevIcon(100, MUS_VOL_BTN_Y + (MUS_SIDE_H / 2), TEXT_COLOR);
-  drawModernButton(MUS_PLAY_X, MUS_PLAY_Y, MUS_PLAY_W, MUS_PLAY_H, RADIUS_LG, playing ? FUNC_COLOR : PLOT_COLOR, false);
+  drawModernButton(MUS_SEEK_X, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD, SURFACE_COLOR, false);
+  drawMinusIcon(MUS_SEEK_X + (MUS_SIDE_W / 2), MUS_SIDE_Y + (MUS_SIDE_H / 2), TEXT_COLOR);
+  drawModernButton(74, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD, SURFACE_COLOR, false);
+  drawSkipRevIcon(98, MUS_SIDE_Y + (MUS_SIDE_H / 2), TEXT_COLOR);
+  drawModernButton(MUS_PLAY_X, MUS_PLAY_Y, MUS_PLAY_W, MUS_PLAY_H, RADIUS_LG, playing ? ACCENT_COLOR : PLOT_COLOR, false);
   if (playing) drawPauseIcon(MUS_PLAY_X + (MUS_PLAY_W / 2), MUS_PLAY_Y + (MUS_PLAY_H / 2), TEXT_COLOR);
   else drawPlayIcon(MUS_PLAY_X + (MUS_PLAY_W / 2), MUS_PLAY_Y + (MUS_PLAY_H / 2), TEXT_COLOR);
-  drawModernButton(196, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD, SURFACE_COLOR, false);
-  drawSkipFwdIcon(220, MUS_VOL_BTN_Y + (MUS_SIDE_H / 2), TEXT_COLOR);
-  drawModernButton(252, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD, SURFACE_COLOR, false);
-  drawPlusIcon(276, MUS_VOL_BTN_Y + (MUS_SIDE_H / 2), TEXT_COLOR);
+  drawModernButton(198, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD, SURFACE_COLOR, false);
+  drawSkipFwdIcon(222, MUS_SIDE_Y + (MUS_SIDE_H / 2), TEXT_COLOR);
+  drawModernButton(252, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD, SURFACE_COLOR, false);
+  drawPlusIcon(276, MUS_SIDE_Y + (MUS_SIDE_H / 2), TEXT_COLOR);
 }
 
-static void drawMusicEmpty(bool sdOk, bool fullWipe) {
-  if (!fullWipe) return;
-  drawScreenHeader("SD AUDIO PLAYER", true);
-  drawIconTile(136, 74, 48, 48, RADIUS_LG, sdOk ? ACCENT_COLOR : DEL_COLOR);
-  if (sdOk) drawWaveIcon(160, 98, 16, 10, MUTED_COLOR);
-  else drawMinusIcon(160, 98, MUTED_COLOR);
+static void drawMusicEmpty(bool sdOk) {
+  drawScreenHeader("MUSIC", true);
+  drawIconTile(136, 70, 48, 48, RADIUS_LG, sdOk ? ACCENT_COLOR : DEL_COLOR);
+  if (sdOk) drawNoteIcon(160, 94, 22, MUTED_COLOR);
+  else drawMinusIcon(160, 94, MUTED_COLOR);
   printCentered(sdOk ? "No playable WAV files" : "SD card not detected", 160, 146, &FreeSans9pt7b, sdOk ? TEXT_COLOR : DEL_COLOR);
   printCentered(sdOk ? "Add 16-bit stereo 44.1 kHz WAVs to the card" : "Insert a card and restart the device", 160, 168, &FreeSans9pt7b, MUTED_COLOR);
 }
@@ -242,7 +246,7 @@ void drawMusicScreen(bool fullWipe) {
   static bool emptyDrawn = false;
   if (numTracks == 0) {
     if (fullWipe || !emptyDrawn) {
-      drawMusicEmpty(sdReady, true);
+      drawMusicEmpty(sdReady);
       emptyDrawn = true;
     }
     return;
@@ -251,14 +255,24 @@ void drawMusicScreen(bool fullWipe) {
   if (fullWipe) {
     tft.fillScreen(BG_COLOR);
     drawScreenHeader("NOW PLAYING", true);
-    drawModernButton(280, 3, 34, 24, RADIUS_SM, SURFACE_HI, false);
-    drawListIcon(297, 15, TEXT_COLOR);
+    drawModernButton(280, 5, 34, 24, RADIUS_SM, SURFACE_HI, false);
+    drawListIcon(297, 17, TEXT_COLOR);
+
+    // Artwork tile: a note on a tinted square, the way a player should look.
+    drawIconTile(MUS_ART_X, MUS_ART_Y, MUS_ART_W, MUS_ART_H, RADIUS_LG, ACCENT_COLOR);
+    drawNoteIcon(MUS_ART_X + (MUS_ART_W / 2), MUS_ART_Y + (MUS_ART_H / 2), 34, ACCENT_COLOR);
 
     String tName = playlist[currentTrack];
-    if (tName.length() > 24) tName = tName.substring(0, 22) + "..";
-    printCentered(tName, 160, 88, &FreeSansBold18pt7b, TEXT_COLOR);
-    String pos = "TRACK " + String(currentTrack + 1) + " OF " + String(numTracks);
-    printCentered(pos, 160, 100, NULL, MUTED_COLOR);
+    if (tName.length() > 16) tName = tName.substring(0, 14) + "..";
+    tft.setFont(&FreeSansBold18pt7b);
+    tft.setTextColor(TEXT_COLOR);
+    tft.setCursor(MUS_INFO_X, MUS_ART_Y + 34);
+    tft.print(tName);
+    tft.setFont(NULL);
+    tft.setTextSize(1);
+    tft.setTextColor(MUTED_COLOR);
+    tft.setCursor(MUS_INFO_X, MUS_ART_Y + 54);
+    tft.print(numTracks > 1 ? ("TRACK " + String(currentTrack + 1) + " OF " + String(numTracks)) : "THE ONLY TRACK");
 
     drawMusicTransport(isPlaying);
     drawProgressBar(MUS_SEEK_X, MUS_SEEK_Y, MUS_SEEK_W, 6, 0.0f, PLOT_COLOR);
@@ -276,20 +290,19 @@ void drawMusicScreen(bool fullWipe) {
     float pct = currentWav.dataSize ? (float)audioStreamPos / (float)currentWav.dataSize : 0;
     int fillW = constrain((int)(pct * (MUS_SEEK_W - 4)), 0, MUS_SEEK_W - 4);
     if (cur_sec != lastSec) {
-      // Elapsed on the right of the seek bar, remaining on the left: the two
-      // numbers stay put instead of shifting as the time runs.  Only the band
-      // between the two is cleared, so the track title above stays untouched.
-      tft.fillRect(MUS_SEEK_X, MUS_SEEK_Y - 18, MUS_SEEK_W, 14, BG_COLOR);
-      printCentered("-" + formatTime(total_sec > cur_sec ? total_sec - cur_sec : 0), MUS_SEEK_X + 46, MUS_SEEK_Y - 6, &FreeSans9pt7b, MUTED_COLOR);
-      printRight(formatTime(cur_sec), MUS_SEEK_X + MUS_SEEK_W, MUS_SEEK_Y - 6, &FreeSans9pt7b, TEXT_COLOR);
+      // Remaining on the left, elapsed on the right, on their own line under
+      // the artwork: the two numbers stay put instead of shifting as the time
+      // runs, and the band between them is the only thing cleared.
+      tft.fillRect(MUS_SEEK_X, MUS_SEEK_Y - 18, MUS_SEEK_W, 12, BG_COLOR);
+      printCentered("-" + formatTime(total_sec > cur_sec ? total_sec - cur_sec : 0), MUS_SEEK_X + 46, MUS_SEEK_Y - 8, &FreeSans9pt7b, MUTED_COLOR);
+      printRight(formatTime(cur_sec), MUS_SEEK_X + MUS_SEEK_W, MUS_SEEK_Y - 8, &FreeSans9pt7b, TEXT_COLOR);
       lastSec = cur_sec;
     }
     if (fillW != lastFillW) {
-      tft.fillRoundRect(MUS_SEEK_X + 2, MUS_SEEK_Y + 2, MUS_SEEK_W - 4, 2, 1, PLOT_COLOR);
-      tft.fillRect(MUS_SEEK_X + 2 + min(lastFillW, fillW), MUS_SEEK_Y, 2, 6, BG_COLOR);
-      tft.fillRect(MUS_SEEK_X + 2 + fillW, MUS_SEEK_Y, MUS_SEEK_W - 4 - fillW, 6, SURFACE_COLOR);
-      if (fillW > 0) tft.fillRect(MUS_SEEK_X + 2, MUS_SEEK_Y, fillW, 6, PLOT_COLOR);
-      tft.fillCircle(MUS_SEEK_X + 2 + fillW, MUS_SEEK_Y + 3, 7, TEXT_COLOR);
+      // Repaint the bar and the scrub handle from scratch each time.
+      drawProgressBar(MUS_SEEK_X, MUS_SEEK_Y, MUS_SEEK_W, 6, pct, PLOT_COLOR);
+      if (lastFillW >= 0) tft.fillCircle(MUS_SEEK_X + 2 + lastFillW, MUS_SEEK_Y + 3, 8, BG_COLOR);
+      tft.fillCircle(MUS_SEEK_X + 2 + fillW, MUS_SEEK_Y + 3, 6, TEXT_COLOR);
       lastFillW = fillW;
     }
   }
@@ -301,20 +314,20 @@ void drawMusicStatus() {
   // The pill mirrors the live volume, so a change made with the earbuds (or on
   // the settings side) shows up on the next refresh.
   if (lastVolume == currentVolume && lastBtState == btConnected) return;
-  tft.fillRect(0, 36, 320, 26, BG_COLOR);
+  tft.fillRect(0, 38, 320, 26, BG_COLOR);
   String state = btConnected ? "Earbuds connected" : "Searching for earbuds";
   int w = 24 + state.length() * 6;
-  drawStatusPill(12, 38, w, state.c_str(), btConnected ? PLOT_COLOR : MUTED_COLOR, btConnected ? TEXT_COLOR : MUTED_COLOR);
+  drawStatusPill(12, 40, w, state.c_str(), btConnected ? PLOT_COLOR : MUTED_COLOR, btConnected ? TEXT_COLOR : MUTED_COLOR);
   String vol = "VOL " + String(currentVolume) + "%";
   int vw = 56;
-  drawStatusPill(320 - 12 - vw, 38, vw, vol.c_str(), 0, currentVolume == 0 ? DEL_COLOR : MUTED_COLOR);
+  drawStatusPill(320 - 12 - vw, 40, vw, vol.c_str(), 0, currentVolume == 0 ? DEL_COLOR : MUTED_COLOR);
   lastVolume = currentVolume;
   lastBtState = btConnected;
 }
 
 void handleMusicTouch(bool touched, int sx, int sy) {
   if (!touched) return;
-  if (inRect(sx, sy, MUS_SEEK_X - 10, MUS_SEEK_Y - 14, MUS_SEEK_W + 20, 34) && numTracks > 0 && audioFile && currentWav.valid) {
+  if (inRect(sx, sy, MUS_SEEK_X - 10, MUS_SEEK_Y - 14, MUS_SEEK_W + 20, 32) && numTracks > 0 && audioFile && currentWav.valid) {
     float pct = constrain((float)(sx - MUS_SEEK_X) / (float)MUS_SEEK_W, 0.0, 1.0);
     uint32_t target_byte = pct * currentWav.dataSize;
     uint16_t frameBytes = currentWav.numChannels * (currentWav.bitsPerSample / 8);
@@ -336,7 +349,7 @@ void handleMusicTouch(bool touched, int sx, int sy) {
   }
   if (millis() - lastMusicBtnPress < 400) return;
   if (inRect(sx, sy, 0, 0, 40, 30)) {
-    flashButton(6, 3, 34, 24, RADIUS_SM);
+    flashButton(6, 5, 34, 24, RADIUS_SM);
     currentState = STATE_HOME;
     drawHomeScreen();
     lastMusicBtnPress = millis();
@@ -351,15 +364,15 @@ void handleMusicTouch(bool touched, int sx, int sy) {
     lastMusicBtnPress = millis();
     return;
   }
-  if (inRect(sx, sy, MUS_SEEK_X, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H)) {
-    flashButton(MUS_SEEK_X, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD);
+  if (inRect(sx, sy, MUS_SEEK_X, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H)) {
+    flashButton(MUS_SEEK_X, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD);
     currentVolume -= 10;
     applyVolume();
     prefs.putInt("volume", currentVolume);
     drawMusicScreen(true);
     lastMusicBtnPress = millis();
-  } else if (inRect(sx, sy, 76, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H)) {
-    flashButton(76, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD);
+  } else if (inRect(sx, sy, 74, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H)) {
+    flashButton(74, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD);
     currentTrack--;
     if (currentTrack < 0) currentTrack = numTracks - 1;
     playTrack(currentTrack);
@@ -372,15 +385,15 @@ void handleMusicTouch(bool touched, int sx, int sy) {
     if (isPlaying && !btConnected) showToast("Earbuds not connected yet");
     drawMusicScreen(true);
     lastMusicBtnPress = millis();
-  } else if (inRect(sx, sy, 196, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H)) {
-    flashButton(196, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD);
+  } else if (inRect(sx, sy, 198, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H)) {
+    flashButton(198, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD);
     currentTrack++;
     if (currentTrack >= numTracks) currentTrack = 0;
     playTrack(currentTrack);
     drawMusicScreen(true);
     lastMusicBtnPress = millis();
-  } else if (inRect(sx, sy, 252, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H)) {
-    flashButton(252, MUS_VOL_BTN_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD);
+  } else if (inRect(sx, sy, 252, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H)) {
+    flashButton(252, MUS_SIDE_Y, MUS_SIDE_W, MUS_SIDE_H, RADIUS_MD);
     currentVolume += 10;
     applyVolume();
     prefs.putInt("volume", currentVolume);
@@ -399,7 +412,7 @@ void drawMusicList() {
   for (int i = 0; i < TRACKS_PER_PAGE; i++) {
     int idx = listPage * TRACKS_PER_PAGE + i;
     if (idx >= numTracks) break;
-    int y = 38 + i * TRACK_ROW_HEIGHT;
+    int y = 42 + i * TRACK_ROW_HEIGHT;
     bool cur = (idx == currentTrack);
     drawCard(10, y, 300, TRACK_ROW_HEIGHT - 3, cur, RADIUS_SM);
     if (cur) tft.fillRect(11, y + 6, 3, TRACK_ROW_HEIGHT - 15, ACCENT_COLOR);
@@ -418,11 +431,11 @@ void drawMusicList() {
     tft.print(name);
     tft.setFont(NULL);
   }
-  drawModernButton(10, 208, 88, 28, RADIUS_MD, listPage > 0 ? SURFACE_HI : SURFACE_COLOR, false);
-  printCentered("PREV", 54, 227, &FreeSans9pt7b, listPage > 0 ? TEXT_COLOR : MUTED_COLOR);
-  drawModernButton(222, 208, 88, 28, RADIUS_MD, listPage < totalPages - 1 ? SURFACE_HI : SURFACE_COLOR, false);
-  printCentered("NEXT", 266, 227, &FreeSans9pt7b, listPage < totalPages - 1 ? TEXT_COLOR : MUTED_COLOR);
-  printCentered("Page " + String(listPage + 1) + " / " + String(totalPages), 160, 227, &FreeSans9pt7b, MUTED_COLOR);
+  drawModernButton(10, 206, 88, 28, RADIUS_MD, listPage > 0 ? SURFACE_HI : SURFACE_COLOR, false);
+  printCentered("PREV", 54, 225, &FreeSans9pt7b, listPage > 0 ? TEXT_COLOR : MUTED_COLOR);
+  drawModernButton(222, 206, 88, 28, RADIUS_MD, listPage < totalPages - 1 ? SURFACE_HI : SURFACE_COLOR, false);
+  printCentered("NEXT", 266, 225, &FreeSans9pt7b, listPage < totalPages - 1 ? TEXT_COLOR : MUTED_COLOR);
+  printCentered("Page " + String(listPage + 1) + " / " + String(totalPages), 160, 225, &FreeSans9pt7b, MUTED_COLOR);
 }
 
 void handleMusicListTouch(bool touched, int sx, int sy) {
@@ -430,20 +443,20 @@ void handleMusicListTouch(bool touched, int sx, int sy) {
   if (millis() - lastMusicBtnPress < 350) return;
   lastMusicBtnPress = millis();
   int totalPages = max(1, (numTracks + TRACKS_PER_PAGE - 1) / TRACKS_PER_PAGE);
-  if (inRect(sx, sy, 0, 0, 40, 30)) {
-    flashButton(6, 3, 34, 24, RADIUS_SM);
+  if (inRect(sx, sy, 0, 0, 44, 34)) {
+    flashButton(6, 5, 34, 24, RADIUS_SM);
     currentState = STATE_MUSIC;
     drawMusicScreen(true);
     return;
   }
-  if (inRect(sx, sy, 10, 208, 88, 28) && listPage > 0) {
-    flashButton(10, 208, 88, 28, RADIUS_MD);
+  if (inRect(sx, sy, 10, 206, 88, 28) && listPage > 0) {
+    flashButton(10, 206, 88, 28, RADIUS_MD);
     listPage--;
     drawMusicList();
     return;
   }
-  if (inRect(sx, sy, 222, 208, 88, 28) && listPage < totalPages - 1) {
-    flashButton(222, 208, 88, 28, RADIUS_MD);
+  if (inRect(sx, sy, 222, 206, 88, 28) && listPage < totalPages - 1) {
+    flashButton(222, 206, 88, 28, RADIUS_MD);
     listPage++;
     drawMusicList();
     return;
@@ -451,7 +464,7 @@ void handleMusicListTouch(bool touched, int sx, int sy) {
   for (int i = 0; i < TRACKS_PER_PAGE; i++) {
     int idx = listPage * TRACKS_PER_PAGE + i;
     if (idx >= numTracks) break;
-    int y = 38 + i * TRACK_ROW_HEIGHT;
+    int y = 42 + i * TRACK_ROW_HEIGHT;
     if (inRect(sx, sy, 10, y, 300, TRACK_ROW_HEIGHT - 3)) {
       flashButton(10, y, 300, TRACK_ROW_HEIGHT - 3, RADIUS_SM);
       if (idx == currentTrack && audioFile && currentWav.valid) {

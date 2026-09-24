@@ -58,6 +58,13 @@ static bool blockVisible(int y, int h) {
   return (y + h) > PAGE_TOP && y < PAGE_BOTTOM;
 }
 
+// The preset page clips whole blocks only: a block that straddles either edge
+// of the viewport is skipped instead of being half painted, which would leave
+// slivers of colour along the viewport border.
+static bool blockFits(int y, int h) {
+  return y >= PAGE_TOP && (y + h) <= PAGE_BOTTOM;
+}
+
 static void drawCheckMark(int cx, int cy, uint16_t color) {
   tft.drawLine(cx - 4, cy, cx - 1, cy + 3, color);
   tft.drawLine(cx - 1, cy + 3, cx + 4, cy - 3, color);
@@ -174,7 +181,7 @@ static void drawPomoTaskRow(int i, int y) {
   drawPlusIcon(plusX + 10, y + 13, TEXT_COLOR);
 
   drawModernButton(delX, y + 4, 30, 18, 4, SURFACE_HI, false);
-  drawMinusIcon(delX + 15, y + 13, DEL_COLOR);
+  drawTrashIcon(delX + 15, y + 12, DEL_COLOR);
 }
 
 void drawPomoTasksView() {
@@ -326,7 +333,7 @@ static void drawPomoPresetRow(int i, int y) {
   tft.setCursor(170, y + 6);
   tft.print(pomoTemplateSummary(t));
   drawModernButton(284, y + 2, 24, 16, 3, SURFACE_HI, false);
-  drawMinusIcon(296, y + 10, DEL_COLOR);
+  drawTrashIcon(296, y + 10, DEL_COLOR);
 }
 
 void drawPomoPresetsView() {
@@ -341,21 +348,21 @@ void drawPomoPresetsView() {
   setPageContentHeight(contentH);
 
   int y = PAGE_TOP - pomoScrollY + PRE_OFF_LABEL;
-  if (blockVisible(y, PRE_LABEL_H)) drawSectionLabel("CURRENT ROUTINE", 10, y + 2);
+  if (blockFits(y, PRE_LABEL_H)) drawSectionLabel("CURRENT ROUTINE", 10, y + 2);
   y = PAGE_TOP - pomoScrollY + PRE_OFF_ROW1;
-  if (blockVisible(y, PRE_CELL_H)) {
+  if (blockFits(y, PRE_CELL_H)) {
     drawPresetCell(8, y, "WORK", pomoWorkTime / 60, true);
     drawPresetCell(162, y, "SHORT", pomoShortTime / 60, true);
   }
   y = PAGE_TOP - pomoScrollY + PRE_OFF_ROW2;
-  if (blockVisible(y, PRE_CELL_H)) {
+  if (blockFits(y, PRE_CELL_H)) {
     drawPresetCell(8, y, "LONG", pomoLongTime / 60, true);
     drawPresetCell(162, y, "CYCLES", pomoLongEvery, false);
   }
 
   // Auto start of the next phase.
   y = PAGE_TOP - pomoScrollY + PRE_OFF_AUTO;
-  if (blockVisible(y, PRE_AUTO_H)) {
+  if (blockFits(y, PRE_AUTO_H)) {
     drawModernButton(8, y, 196, PRE_AUTO_H, RADIUS_SM, SURFACE_COLOR, false);
     printCentered("AUTO START NEXT", 106, y + 15, &FreeSans9pt7b, MUTED_COLOR);
     static const char* const autoLabels[2] = { "ON", "OFF" };
@@ -363,20 +370,20 @@ void drawPomoPresetsView() {
   }
 
   y = PAGE_TOP - pomoScrollY + PRE_OFF_SAVE;
-  if (blockVisible(y, PRE_SAVE_H)) {
+  if (blockFits(y, PRE_SAVE_H)) {
     drawModernButton(8, y, 304, PRE_SAVE_H, RADIUS_MD, PLOT_COLOR, true);
     printCentered("SAVE CURRENT AS ROUTINE", 160, y + 17, &FreeSans9pt7b, TEXT_COLOR);
   }
 
   y = PAGE_TOP - pomoScrollY + PRE_OFF_LIST;
-  if (blockVisible(y, PRE_LABEL_H)) drawSectionLabel("SAVED ROUTINES", 10, y + 2);
+  if (blockFits(y, PRE_LABEL_H)) drawSectionLabel("SAVED ROUTINES", 10, y + 2);
   y += PRE_LABEL_H;
   for (int i = 0; i < MAX_POMO_TEMPLATES; i++) {
     if (!pomoTemplates[i].in_use) continue;
-    if (blockVisible(y, PRE_ROW_H)) drawPomoPresetRow(i, y);
+    if (blockFits(y, PRE_ROW_H)) drawPomoPresetRow(i, y);
     y += PRE_ROW_H;
   }
-  if (used == 0 && blockVisible(y, 16)) printCentered("Nothing saved yet", 160, y + 12, &FreeSans9pt7b, MUTED_COLOR);
+  if (used == 0 && blockFits(y, 16)) printCentered("Nothing saved yet", 160, y + 12, &FreeSans9pt7b, MUTED_COLOR);
 
   // Fixed chrome.
   tft.fillRect(0, PAGE_BOTTOM, 320, 240 - PAGE_BOTTOM, BG_COLOR);
@@ -516,11 +523,11 @@ static void drawDayReport() {
     int x = 16 + (h * 12);
     int barH = (int)(((float)pomoHourly[h] / scale) * 22.0f);
     if (pomoHourly[h] > 0) barH = max(barH, 2);
-    tft.fillRect(x, 226 - barH, 9, barH, pomoHourly[h] > 0 ? ACCENT_COLOR : SURFACE_COLOR);
+    tft.fillRect(x, 222 - barH, 9, barH, pomoHourly[h] > 0 ? ACCENT_COLOR : SURFACE_COLOR);
     if (h % 6 == 0) {
       tft.setTextSize(1);
       tft.setTextColor(MUTED_COLOR);
-      tft.setCursor(x, 228);
+      tft.setCursor(x, 224);
       tft.print(String(h));
     }
   }
@@ -543,15 +550,18 @@ static void drawWeekReport() {
     peak = max(peak, values[i]);
   }
   int scale = chartScale(peak);
-  const int baseY = 176;
+  const int baseY = 178;
   const int barW = 26;
   const int step = 41;  // 7 bars of 26 px inside 24..296
   for (int i = 0; i < 7; i++) {
     int x = 24 + (i * step);
-    int h = (int)(((float)values[i] / scale) * 98.0f);
+    int h = (int)(((float)values[i] / scale) * 86.0f);
     if (values[i] > 0) h = max(h, 3);
     tft.fillRect(x, baseY - h, barW, h, i == 6 ? ACCENT_COLOR : PLOT_COLOR);
-    if (values[i] > 0) printCentered(String(values[i]), x + (barW / 2), baseY - h - 4, NULL, MUTED_COLOR);
+    // The number sits entirely above its bar - never straddling the top edge -
+    // and is dropped for the tallest bar when it would hit the chart title.
+    if (values[i] > 0 && baseY - h - 20 > 84)
+      printCentered(String(values[i]), x + (barW / 2), baseY - h - 12, NULL, MUTED_COLOR);
     tft.drawFastHLine(24, baseY + 1, 272, BTN_OUTLINE);
     long day = (long)today - (6 - i);
     String label = (day < 0 || !pomoClockValid()) ? String("d") + String(i) : String(WEEKDAY_SHORT[pomoWeekday((uint32_t)day)]);
@@ -559,13 +569,13 @@ static void drawWeekReport() {
     if (day >= 0 && pomoClockValid()) {
       int y2, m2, d2;
       civilFromDays((uint32_t)day, y2, m2, d2);
-      printCentered(String(d2), x + (barW / 2), baseY + 20, NULL, MUTED_COLOR);
+      printCentered(String(d2), x + (barW / 2), baseY + 21, NULL, MUTED_COLOR);
     }
   }
-  printCentered("TOTAL " + pomoFormatMinutes(total) + "  -  " + String(blocks) + " blocks", 160, 214, &FreeSans9pt7b, TEXT_COLOR);
+  printCentered("TOTAL " + pomoFormatMinutes(total) + "  -  " + String(blocks) + " blocks", 160, 222, &FreeSans9pt7b, TEXT_COLOR);
   String footer = "active " + String(activeDays) + "d  -  avg " + pomoFormatMinutes(activeDays ? total / activeDays : 0);
   if (bestMinutes > 0) footer += "  -  best " + String(WEEKDAY_MED[pomoWeekday(bestDay)]) + " " + pomoFormatMinutes(bestMinutes);
-  printCentered(footer, 160, 226, NULL, MUTED_COLOR);
+  printCentered(footer, 160, 228, NULL, MUTED_COLOR);
 }
 
 static void drawMonthReport() {

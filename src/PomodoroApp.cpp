@@ -257,7 +257,13 @@ void drawPomoTimerView(bool fullWipe) {
     }
     tft.endWrite();
     printCentered(timeStr, POMO_RING_CX, POMO_RING_CY + 14, &FreeSansBold24pt7b, TEXT_COLOR);
-    printCentered(pomoModeTitle(), POMO_RING_CX, POMO_RING_CY - 22, &FreeSans9pt7b, MUTED_COLOR);
+    // The phase name sits in the quiet strip on the ring's left: inside the
+    // ring it used to cross the progress arc.
+    tft.setFont(&FreeSans9pt7b);
+    tft.setTextColor(timerColor);
+    tft.setCursor(12, 88);
+    tft.print(pomoModeTitle());
+    tft.setFont(NULL);
     lastAngle = endAngle;
     lastTimeStr = timeStr;
   }

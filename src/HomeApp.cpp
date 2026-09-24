@@ -19,61 +19,58 @@ void drawHomeClock() {
   int h, m;
   if (!getClock(h, m)) m = homeLastMinute;
   homeLastMinute = m;
-  tft.fillRect(8, 0, 96, 30, SURFACE_COLOR);
-  tft.setFont(&FreeSansBold9pt7b);
+  tft.fillRect(8, 0, 104, 34, SURFACE_COLOR);
+  tft.setFont(&FreeSansBold12pt7b);
   tft.setTextColor(timeSynced ? TEXT_COLOR : MUTED_COLOR);
-  tft.setCursor(14, 20);
+  tft.setCursor(14, 25);
   tft.print(getTimeString());
   tft.setFont(NULL);
 }
 
 static void drawHomeStatus() {
-  // One line that answers "is everything ready?" without opening an app.
-  int y = 190;
-  tft.fillRect(0, y, 320, 40, BG_COLOR);
+  // Two rows of status pills answer "is everything ready?" without opening an
+  // app: storage and earbuds on top, today's progress and the date below.
+  const int y = 182;
+  tft.fillRect(0, y, 320, 58, BG_COLOR);
   String storage = sdReady ? (String(numTracks) + (numTracks == 1 ? " track" : " tracks")) : String("no SD card");
-  drawStatusPill(12, y + 2, 148, storage.c_str(), sdReady ? PLOT_COLOR : MUTED_COLOR, sdReady ? TEXT_COLOR : MUTED_COLOR);
-  drawStatusPill(168, y + 2, 140, btConnected ? "earbuds connected" : "earbuds off", btConnected ? PLOT_COLOR : MUTED_COLOR,
-                 btConnected ? TEXT_COLOR : MUTED_COLOR);
+  drawStatusPill(12, y, 148, storage.c_str(), sdReady ? PLOT_COLOR : MUTED_COLOR, sdReady ? TEXT_COLOR : MUTED_COLOR);
+  drawStatusPill(168, y, 140, btConnected ? "earbuds linked" : "earbuds off",
+                 btConnected ? PLOT_COLOR : MUTED_COLOR, btConnected ? TEXT_COLOR : MUTED_COLOR);
   if (pomoRunning) {
     String left = formatTime(pomoSeconds) + " left";
-    drawStatusPill(12, y + 24, 148, left.c_str(), ACCENT_COLOR, ACCENT_COLOR);
+    drawStatusPill(12, y + 22, 148, left.c_str(), ACCENT_COLOR, TEXT_COLOR);
   } else {
     int done = pomoStatBlocks(pomoTodayDay());
     String goal = String(done) + "/" + String(pomoDailyGoal) + " blocks today";
-    drawStatusPill(12, y + 24, 148, goal.c_str(), 0, MUTED_COLOR);
+    drawStatusPill(12, y + 22, 148, goal.c_str(), 0, MUTED_COLOR);
   }
-  String today = dateLabelShort();
-  drawStatusPill(168, y + 24, 140, today.c_str(), 0, MUTED_COLOR);
+  drawStatusPill(168, y + 22, 140, dateLabelShort().c_str(), 0, MUTED_COLOR);
 }
 
 void drawHomeScreen() {
   tft.fillScreen(BG_COLOR);
-  tft.fillRect(0, 0, 320, 30, SURFACE_COLOR);
-  tft.drawFastHLine(0, 30, 320, BTN_OUTLINE);
-  printCentered("SMARTPAD", 160, 20, &FreeSansBold9pt7b, MUTED_COLOR);
-  drawModernButton(280, 3, 34, 24, RADIUS_SM, SURFACE_HI, false);
-  drawGearIcon(297, 15, 8, TEXT_COLOR);
+  // Same chrome as every other screen; the clock and the gear ride on top of
+  // the shared bar.
+  drawScreenHeader("SMARTPAD", false);
+  drawModernButton(280, 5, 34, 24, RADIUS_SM, SURFACE_HI, false);
+  drawGearIcon(297, 17, 8, TEXT_COLOR);
   drawHomeClock();
 
-  // Each card: one icon in the upper half, the name on the 9 pt line.  No
-  // subtitle, so the tiles stay quiet and nothing can crowd the edges.
-  const int iconCY = HOME_CARD_Y + 40;
+  // Each tile: the app colour lives in the icon, the frame stays neutral, so
+  // the row reads as one set instead of three competing colours.
+  const int iconCY = HOME_CARD_Y + 42;
 
-  // Grapher
   drawIconTile(HOME_CARD_X[0], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H, RADIUS_LG, F1_COLOR);
   printCentered("f(x)", HOME_CARD_X[0] + (HOME_CARD_W / 2), iconCY + 9, &FreeSansBold18pt7b, F1_COLOR);
-  printCentered("Grapher", HOME_CARD_X[0] + (HOME_CARD_W / 2), HOME_CARD_Y + 84, &FreeSans9pt7b, TEXT_COLOR);
+  printCentered("Grapher", HOME_CARD_X[0] + (HOME_CARD_W / 2), HOME_CARD_Y + 86, &FreeSans9pt7b, TEXT_COLOR);
 
-  // Music
   drawIconTile(HOME_CARD_X[1], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H, RADIUS_LG, F2_COLOR);
   drawWaveIcon(HOME_CARD_X[1] + (HOME_CARD_W / 2), iconCY, 20, 12, F2_COLOR);
-  printCentered("Music", HOME_CARD_X[1] + (HOME_CARD_W / 2), HOME_CARD_Y + 84, &FreeSans9pt7b, TEXT_COLOR);
+  printCentered("Music", HOME_CARD_X[1] + (HOME_CARD_W / 2), HOME_CARD_Y + 86, &FreeSans9pt7b, TEXT_COLOR);
 
-  // Timer
   drawIconTile(HOME_CARD_X[2], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H, RADIUS_LG, ACCENT_COLOR);
   drawClockIcon(HOME_CARD_X[2] + (HOME_CARD_W / 2), iconCY, 15, ACCENT_COLOR);
-  printCentered("Timer", HOME_CARD_X[2] + (HOME_CARD_W / 2), HOME_CARD_Y + 84, &FreeSans9pt7b, TEXT_COLOR);
+  printCentered("Timer", HOME_CARD_X[2] + (HOME_CARD_W / 2), HOME_CARD_Y + 86, &FreeSans9pt7b, TEXT_COLOR);
 
   drawHomeStatus();
 }

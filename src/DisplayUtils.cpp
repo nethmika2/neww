@@ -1,5 +1,6 @@
 #include "DisplayUtils.h"
 #include "TimeService.h"
+#include <string.h>
 
 // Forward declarations for apps redrawn on wake
 void drawHomeScreen();
@@ -131,13 +132,13 @@ void drawModernButton(int x, int y, int w, int h, int r, uint16_t bg, bool shado
 // bottom, an optional back chevron on the left and the title centred.  Keeping
 // it in one place is what makes the screens look like parts of one product.
 void drawScreenHeader(const char* title, bool showBack) {
-  tft.fillRect(0, 0, 320, 30, SURFACE_COLOR);
-  tft.drawFastHLine(0, 30, 320, BTN_OUTLINE);
+  tft.fillRect(0, 0, 320, 34, SURFACE_COLOR);
+  tft.drawFastHLine(0, 34, 320, BTN_OUTLINE);
   if (showBack) {
-    drawModernButton(6, 3, 34, 24, RADIUS_SM, SURFACE_HI, false);
-    drawBackChevron(23, 15, TEXT_COLOR);
+    drawModernButton(6, 5, 34, 24, RADIUS_SM, SURFACE_HI, false);
+    drawBackChevron(23, 17, TEXT_COLOR);
   }
-  if (title && title[0]) printCentered(title, 160, 20, &FreeSansBold9pt7b, TEXT_COLOR);
+  if (title && title[0]) printCentered(title, showBack ? 168 : 160, 25, &FreeSansBold12pt7b, TEXT_COLOR);
 }
 
 // A square tile used for the home screen and for icon buttons: a faint tint of
@@ -149,6 +150,11 @@ void drawIconTile(int x, int y, int w, int h, int radius, uint16_t tint) {
 }
 
 // Status pill: "connected", "searching", a counter.  Small, quiet, aligned.
+void drawPanel(int x, int y, int w, int h, const char* title) {
+  drawCard(x, y, w, h, false, RADIUS_MD);
+  if (title && title[0]) drawSectionLabel(title, x + 12, y + 8);
+}
+
 void drawStatusPill(int x, int y, int w, const char* text, uint16_t dotColor, uint16_t textColor) {
   int h = 18;
   tft.fillRoundRect(x, y, w, h, h / 2, SURFACE_COLOR);
@@ -165,11 +171,17 @@ void drawCard(int x, int y, int w, int h, bool active, int radius) {
   tft.drawRoundRect(x, y, w, h, radius, active ? ACCENT_COLOR : BTN_OUTLINE);
 }
 
+// Small caption with a hairline rule running to the right margin.  It costs a
+// single line and turns a bare caption into a section divider, which is what
+// makes the longer pages readable at a glance.
 void drawSectionLabel(const char* text, int x, int y) {
   tft.setTextSize(1);
   tft.setTextColor(MUTED_COLOR);
   tft.setCursor(x, y);
   tft.print(text);
+  int w = (int)strlen(text) * 6;
+  int ruleX = x + w + 8;
+  if (ruleX < 306) tft.drawFastHLine(ruleX, y + 3, 312 - ruleX, BTN_OUTLINE);
 }
 
 // A pill shaped switch: the active half is filled with the accent colour and
@@ -197,6 +209,13 @@ void drawProgressBar(int x, int y, int w, int h, float pct, uint16_t color) {
   tft.fillRoundRect(x, y, w, h, h / 2, SURFACE_COLOR);
   int fillW = (int)(pct * (w - 4));
   if (fillW > 0) tft.fillRoundRect(x + 2, y + 2, fillW, h - 4, (h - 4) / 2, color);
+}
+
+void drawNoteIcon(int cx, int cy, int size, uint16_t color) {
+  int head = size / 3;
+  tft.fillCircle(cx - head, cy + head, head, color);
+  tft.fillRect(cx + size / 6 - 1, cy - size / 2, 2, size, color);
+  tft.fillRect(cx + size / 6 - 1, cy - size / 2, size / 2, 2, color);
 }
 
 void drawCrosshairTarget(int cx, int cy, int r, uint16_t color) {
@@ -271,6 +290,16 @@ void drawPlusIcon(int cx, int cy, uint16_t color) {
 
 void drawMinusIcon(int cx, int cy, uint16_t color) {
   tft.fillRect(cx - 8, cy - 2, 16, 4, color);
+}
+
+// A trash can, not a minus: list rows use a minus for "fewer", so the delete
+// affordance has to look like something else or the two read alike.
+void drawTrashIcon(int cx, int cy, uint16_t color) {
+  tft.fillRect(cx - 3, cy - 8, 6, 2, color);        // handle
+  tft.fillRect(cx - 6, cy - 6, 13, 2, color);       // lid
+  tft.drawRect(cx - 5, cy - 4, 11, 10, color);      // body
+  tft.drawFastVLine(cx - 2, cy - 2, 6, color);      // ribs
+  tft.drawFastVLine(cx + 2, cy - 2, 6, color);
 }
 
 int drawRadical(int x, int y, int size, uint16_t color) {

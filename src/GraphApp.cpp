@@ -429,17 +429,14 @@ void drawFunctionTabs() {
     if (active) tft.fillRect(x, 28, tabW, 2, funcs[i].color);
     if (funcs[i].visible) tft.fillCircle(x + 8, 14, 4, funcs[i].color);
     else tft.drawCircle(x + 8, 14, 4, MUTED_COLOR);
-    if (broken) {
-      tft.setTextColor(DEL_COLOR);
-      tft.setTextSize(1);
-      tft.setCursor(x + tabW - 9, 3);
-      tft.print("!");
-    }
     int maxChars = max(2, (tabW - 16) / 6);
     String truncEq = funcs[i].input;
     if (truncEq.length() > maxChars) truncEq = truncEq.substring(0, maxChars - 1) + ".";
     if (truncEq.length() == 0) truncEq = "+";
-    printPrettyEquation(x + 15, 10, truncEq, -1, funcs[i].visible ? TEXT_COLOR : MUTED_COLOR, 1);
+    // A broken expression turns its own label red instead of sprouting a
+    // floating marker that reads like an alignment bug.
+    uint16_t labelColor = broken ? DEL_COLOR : (funcs[i].visible ? TEXT_COLOR : MUTED_COLOR);
+    printPrettyEquation(x + 15, 10, truncEq, -1, labelColor, 1);
   }
 }
 
