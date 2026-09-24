@@ -50,7 +50,6 @@ void drawMinusIcon(int cx, int cy, uint16_t color);
 void drawTrashIcon(int cx, int cy, uint16_t color);
 int drawRadical(int x, int y, int size, uint16_t color);
 void drawWaveIcon(int cx, int cy, int halfW, int amp, uint16_t color);
-void drawBookIcon(int cx, int cy, int halfW, uint16_t color);
 void drawPlayIcon(int cx, int cy, uint16_t color);
 void drawPauseIcon(int cx, int cy, uint16_t color);
 void drawSkipFwdIcon(int cx, int cy, uint16_t color);

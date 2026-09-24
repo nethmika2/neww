@@ -17,7 +17,6 @@
 #include "SettingsApp.h"
 #include "CalibrationApp.h"
 #include "HomeApp.h"
-#include "StudyApp.h"
 
 // ==========================================
 // CORE SETUP
@@ -179,7 +178,6 @@ void loop() {
   else if (currentState == STATE_POMODORO) handlePomodoroTouch(touched, sx, sy);
   else if (currentState == STATE_POINT_KBD) handlePointKeyboardTouch(touched, sx, sy);
   else if (currentState == STATE_TEXT_KBD) handleTextKeyboardTouch(touched, sx, sy);
-  else if (currentState == STATE_STUDY) handleStudyTouch(touched, sx, sy);
   else handleKeyboardTouch(touched, sx, sy);
 
   delay(2);

@@ -65,7 +65,7 @@ class File {
     return slash == std::string::npos ? path_.c_str() : path_.c_str() + slash + 1;
   }
   bool isDirectory() const { return isDir_; }
-  // Walks the entries directly below this handle.  Both "/" and "/study" work:
+  // Walks the entries directly below this handle.  Both "/" and "/notes" work:
   // the separator is normalised rather than assumed.
   File openNextFile(const char * = FILE_READ) {
     if (!isDir_ || !fs_) return File();
