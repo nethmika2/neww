@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cmath>
 #include "HostDraw.h"
+#include <ctime>
 #include "Adafruit_GFX.h"
 #include "SPI.h"
 #include "Wire.h"
@@ -63,6 +64,24 @@ int digitalRead(uint8_t pin) { return gpioState.count(pin) ? gpioState[pin] : 0;
 int analogRead(uint8_t) { return 2048; }
 void analogWrite(uint8_t, int) {}
 uint16_t analogReadMilliVolts(uint8_t) { return 1650; }
+// ---- clock -----------------------------------------------------------------
+// The firmware asks the RTC for the time; the host has no RTC to set, so the
+// tests drive it here.  Negative means "use the real clock".
+static time_t hostClockOverride = -1;
+void hostSetClock(time_t t) { hostClockOverride = t; }
+time_t time(time_t* out) {
+  time_t t;
+  if (hostClockOverride >= 0) {
+    t = hostClockOverride;
+  } else {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    t = ts.tv_sec;
+  }
+  if (out) *out = t;
+  return t;
+}
+
 // ---- PWM (RGB LED + backlight) --------------------------------------------
 // The host build models the 2.x core: channels carry the duty, which is recorded
 // so the tests can assert exactly what the idle modes light up.

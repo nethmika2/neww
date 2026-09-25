@@ -55,7 +55,15 @@ void setup() {
     ledColor = (LedColor)constrain(c, 0, LED_C_COUNT - 1);
     ledEffect = (LedEffect)constrain(e, 0, LED_E_COUNT - 1);
     ledLevel = (LedLevel)constrain(l, 0, LED_L_COUNT - 1);
-    ledFollowApps = prefs.getBool("ledfollow", true);
+    // Older builds had a plain on/off for "follow the apps"; it maps onto the
+    // three show modes, so an existing setting is kept.
+    if (prefs.isKey("ledshow")) {
+      int sh = prefs.getInt("ledshow", LED_S_APPS);
+      ledShow = (LedShow)constrain(sh, 0, LED_S_COUNT - 1);
+    } else {
+      ledShow = prefs.getBool("ledfollow", true) ? LED_S_APPS : LED_S_DARK;
+    }
+    ledInvert = prefs.getBool("ledinvert", false);
   }
 
   // Older builds stored a plain on/off for the idle screensaver; it maps onto

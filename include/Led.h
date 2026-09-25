@@ -61,3 +61,6 @@ uint8_t ledLevelPeak(LedLevel level);       // 0..255 multiplier for a level
 const char* ledColorName(LedColor c);
 const char* ledEffectName(LedEffect e);
 const char* ledLevelName(LedLevel l);
+const char* ledShowName(LedShow show);
+// Prints what is being driven (colour/effect/level, channels, duties, backlight).
+void ledLogState(const char* why);

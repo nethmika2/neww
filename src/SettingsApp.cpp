@@ -49,10 +49,12 @@ static const int CLOCK_BTN_H = 18;
 
 // The LED page: three full rows of patterns, colours and brightness, then the
 // follow-apps switch beside the brightness.
-static const int LED_ROW_1 = 66;
-static const int LED_ROW_2 = 118;
-static const int LED_ROW_3 = 170;
-static const int LED_ROW_H = 46;
+static const int LED_ROW_1 = 62;
+static const int LED_ROW_2 = 106;
+static const int LED_ROW_3 = 150;
+static const int LED_ROW_4 = 194;
+static const int LED_ROW_H = 44;
+static const int LED_CARD_H = 40;
 
 static int settingsPage = 0;                 // 0 = device, 1 = LED
 
@@ -74,12 +76,12 @@ static void drawFieldLabel(const char* text, int x, int y, uint16_t color) {
 // A toggle card is a title line and a two-way switch, nothing else: the title
 // sits on the card's top left, the switch fills the lower part.
 static void drawSegCard(int x, int y, int w, const char* title, const char* const* labels, int count,
-                        int active) {
-  drawCard(x, y, w, CARD_H, false, RADIUS_MD);
-  drawFieldLabel(title, x + 10, y + 7, MUTED_COLOR);
+                        int active, int h = CARD_H) {
+  drawCard(x, y, w, h, false, RADIUS_MD);
+  drawFieldLabel(title, x + 10, y + 6, MUTED_COLOR);
   // Three or more segments leave each label little room, so those use the
   // built-in font; the two-way cards keep the bolder face.
-  drawSegmentedControl(x + 10, y + 19, w - 20, 24, labels, count, active,
+  drawSegmentedControl(x + 10, y + 18, w - 20, h - 20, labels, count, active,
                        count > 2 ? NULL : &FreeSansBold9pt7b);
 }
 
@@ -104,15 +106,19 @@ static void drawLedPage() {
   static const char* const effectLabels[LED_E_COUNT] = { "FADE", "BREATHE", "CYCLE", "PULSE", "SOLID" };
   static const char* const colorLabels[LED_C_COUNT] = { "BLUE", "VIOLET", "GREEN", "AMBER", "WHITE", "RED" };
   static const char* const levelLabels[LED_L_COUNT] = { "LOW", "MED", "HIGH" };
-  static const char* const followLabels[2] = { "ON", "OFF" };
+  static const char* const showLabels[LED_S_COUNT] = { "DARK", "ALWAYS", "APPS" };
+  static const char* const wiringLabels[2] = { "LOW=ON", "HIGH=ON" };
 
-  drawSegCard(10, LED_ROW_1, 300, "PATTERN", effectLabels, LED_E_COUNT, (int)ledEffect);
-  drawSegCard(10, LED_ROW_2, 300, "COLOUR", colorLabels, LED_C_COUNT, (int)ledColor);
-  drawSegCard(COL_L, LED_ROW_3, CARD_W, "BRIGHTNESS", levelLabels, LED_L_COUNT, (int)ledLevel);
-  drawSegCard(COL_R, LED_ROW_3, CARD_W, "FOLLOW APPS", followLabels, 2, ledFollowApps ? 0 : 1);
-  // Say what the LED is for: it is also the light that keeps a power bank
-  // supplying the board while the screen is dark.
-  printCentered("Also keeps a power bank awake when dark", 160, 226, NULL, MUTED_COLOR);
+  drawSegCard(10, LED_ROW_1, 300, "PATTERN", effectLabels, LED_E_COUNT, (int)ledEffect, LED_CARD_H);
+  drawSegCard(10, LED_ROW_2, 300, "COLOUR", colorLabels, LED_C_COUNT, (int)ledColor, LED_CARD_H);
+  // Brightness needs little room (LOW/MED/HIGH); SHOW gets the rest, because
+  // ALWAYS has to fit inside its own third of the card.
+  drawSegCard(COL_L, LED_ROW_3, 128, "BRIGHTNESS", levelLabels, LED_L_COUNT, (int)ledLevel, LED_CARD_H);
+  drawSegCard(144, LED_ROW_3, 166, "SHOW", showLabels, LED_S_COUNT, (int)ledShow, LED_CARD_H);
+  // Wiring: most CYDs light the LED when the pin is pulled LOW, but the clones
+  // differ, so this is a setting rather than a guess in the code.
+  drawSegCard(10, LED_ROW_4, 300, "WIRING - HIGH=ON IF THE LED IS ALWAYS BRIGHT",
+              wiringLabels, 2, ledInvert ? 1 : 0, LED_CARD_H);
 }
 
 void drawSettingsScreen() {
@@ -187,7 +193,7 @@ void handleSettingsTouch(bool touched, int sx, int sy) {
   if (settingsPage == 1) {
     // Every change previews itself for a couple of seconds: the LED is on the
     // back of the board, so the light says what the setting does.
-    if (inRect(sx, sy, 10, LED_ROW_1, 300, CARD_H)) {
+    if (inRect(sx, sy, 10, LED_ROW_1, 300, LED_CARD_H)) {
       int seg = segmentAt(sx, 10, 300, LED_E_COUNT);
       flashButton(10, LED_ROW_1, 300, LED_ROW_H, RADIUS_MD);
       ledEffect = (LedEffect)(seg - 1);
@@ -197,7 +203,7 @@ void handleSettingsTouch(bool touched, int sx, int sy) {
       drawSettingsScreen();
       return;
     }
-    if (inRect(sx, sy, 10, LED_ROW_2, 300, CARD_H)) {
+    if (inRect(sx, sy, 10, LED_ROW_2, 300, LED_CARD_H)) {
       int seg = segmentAt(sx, 10, 300, LED_C_COUNT);
       flashButton(10, LED_ROW_2, 300, LED_ROW_H, RADIUS_MD);
       ledColor = (LedColor)(seg - 1);
@@ -207,22 +213,35 @@ void handleSettingsTouch(bool touched, int sx, int sy) {
       drawSettingsScreen();
       return;
     }
-    if (inRect(sx, sy, COL_L, LED_ROW_3, CARD_W, CARD_H)) {
-      int seg = segmentAt(sx, COL_L, CARD_W, LED_L_COUNT);
+    if (inRect(sx, sy, COL_L, LED_ROW_3, 128, LED_CARD_H)) {
+      int seg = segmentAt(sx, COL_L, 128, LED_L_COUNT);
       flashButton(COL_L, LED_ROW_3, CARD_W, LED_ROW_H, RADIUS_MD);
       ledLevel = (LedLevel)(seg - 1);
       prefs.putInt("ledlevel", (int)ledLevel);
       ledPreview(ledColor, ledEffect, ledLevel);
-      showToast(String("LED brightness ") + ledLevelName(ledLevel));
+      ledLogState("brightness");
+      showToast(String("Brightness ") + ledLevelName(ledLevel));
       drawSettingsScreen();
       return;
     }
-    if (inRect(sx, sy, COL_R, LED_ROW_3, CARD_W, CARD_H)) {
-      int seg = segmentAt(sx, COL_R, CARD_W, 2);
+    if (inRect(sx, sy, 144, LED_ROW_3, 166, LED_CARD_H)) {
+      int seg = segmentAt(sx, 144, 166, LED_S_COUNT);
       flashButton(COL_R, LED_ROW_3, CARD_W, LED_ROW_H, RADIUS_MD);
-      ledFollowApps = (seg == 1);
-      prefs.putBool("ledfollow", ledFollowApps);
-      showToast(ledFollowApps ? "LED follows the apps" : "LED only when dark");
+      ledShow = (LedShow)(seg - 1);
+      prefs.putInt("ledshow", (int)ledShow);
+      ledPreview(ledColor, ledEffect, ledLevel);
+      showToast(String("LED shows: ") + ledShowName(ledShow));
+      drawSettingsScreen();
+      return;
+    }
+    if (inRect(sx, sy, 10, LED_ROW_4, 300, LED_CARD_H)) {
+      int seg = segmentAt(sx, 10, 300, 2);
+      flashButton(10, LED_ROW_4, 300, LED_ROW_H, RADIUS_MD);
+      ledInvert = (seg == 2);
+      prefs.putBool("ledinvert", ledInvert);
+      ledPreview(ledColor, ledEffect, ledLevel);
+      ledLogState("wiring");
+      showToast(ledInvert ? "LED wiring HIGH=ON" : "LED wiring LOW=ON");
       drawSettingsScreen();
       return;
     }

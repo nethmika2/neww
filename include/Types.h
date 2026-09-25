@@ -23,6 +23,9 @@ enum AppState {
 enum LedColor { LED_C_BLUE = 0, LED_C_VIOLET, LED_C_GREEN, LED_C_AMBER, LED_C_WHITE, LED_C_RED, LED_C_COUNT };
 enum LedEffect { LED_E_FADE = 0, LED_E_BREATHE, LED_E_CYCLE, LED_E_PULSE, LED_E_SOLID, LED_E_COUNT };
 enum LedLevel { LED_L_LOW = 0, LED_L_MED, LED_L_HIGH, LED_L_COUNT };
+// When the light is lit: only while the screen is dark (the keep-awake job),
+// always, or always plus the apps' own patterns.
+enum LedShow { LED_S_DARK = 0, LED_S_ALWAYS, LED_S_APPS, LED_S_COUNT };
 
 // What happens when the screen has been idle for a while.  Every one of these
 // keeps the board drawing power, because a power bank that sees no load cuts

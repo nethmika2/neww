@@ -84,7 +84,8 @@ IdleMode idleMode = IDLE_CLOCK;
 LedColor ledColor = LED_C_VIOLET;
 LedEffect ledEffect = LED_E_FADE;
 LedLevel ledLevel = LED_L_MED;
-bool ledFollowApps = true;
+LedShow ledShow = LED_S_APPS;
+bool ledInvert = false;
 unsigned long lastActivityTime = 0, lastSaverTick = 0;
 int clockX = 160, clockY = 130, lastDrawnMinute = -1, homeLastMinute = -1;
 

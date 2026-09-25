@@ -83,11 +83,10 @@ const char* ledLevelName(LedLevel l) {
 // "on".  Duty is inverted here, which lets everything else talk about
 // brightness the way a person expects.
 static uint8_t ledDuty(uint8_t brightness) {
-#if LED_ACTIVE_LOW
-  return (uint8_t)(LED_PWM_MAX - brightness);
-#else
-  return brightness;
-#endif
+  // A board that lights the LED the other way round just needs the duty
+  // inverted; the setting exists because not every CYD clone is wired the same.
+  bool inverted = LED_ACTIVE_LOW ? !ledInvert : ledInvert;
+  return inverted ? (uint8_t)(LED_PWM_MAX - brightness) : brightness;
 }
 
 static uint8_t nowChannels[3] = { 0, 0, 0 };
@@ -278,26 +277,44 @@ void updateStatusLed() {
     ledTick();
     return;
   }
-  if (!screenOn) {
-    // The panel is dark: this is the load that keeps a power bank awake, so it
-    // runs in every idle mode and is not affected by the follow-apps switch.
+  // The chosen BRIGHTNESS applies to every pattern, including the ones the apps
+  // pick - it used to be ignored there, which made the control look dead.
+  if (!screenOn || ledShow == LED_S_ALWAYS) {
+    // The panel is dark (or the light is always on): this is also the load that
+    // keeps a power bank awake, so it runs in every idle mode.
     ledRequest(ledColor, ledEffect, ledLevel);
     ledTick();
     return;
   }
-  if (ledFollowApps) {
+  if (ledShow == LED_S_APPS) {
     if (pomoRunning) {
-      if (pomoMode == MODE_WORK) ledRequest(LED_C_AMBER, LED_E_FADE, LED_L_MED);
-      else if (pomoMode == MODE_SHORT_BREAK) ledRequest(LED_C_GREEN, LED_E_BREATHE, LED_L_MED);
-      else ledRequest(LED_C_BLUE, LED_E_BREATHE, LED_L_MED);
+      if (pomoMode == MODE_WORK) ledRequest(LED_C_AMBER, LED_E_FADE, ledLevel);
+      else if (pomoMode == MODE_SHORT_BREAK) ledRequest(LED_C_GREEN, LED_E_BREATHE, ledLevel);
+      else ledRequest(LED_C_BLUE, LED_E_BREATHE, ledLevel);
       ledTick();
       return;
     }
     if (isPlaying) {
-      ledRequest(LED_C_BLUE, LED_E_CYCLE, LED_L_MED);
+      ledRequest(LED_C_BLUE, LED_E_CYCLE, ledLevel);
       ledTick();
       return;
     }
   }
   if (nowBrightness) statusLedOff();
+}
+
+const char* ledShowName(LedShow show) {
+  static const char* const names[LED_S_COUNT] = { "DARK", "ALWAYS", "APPS" };
+  return names[constrain((int)show, 0, LED_S_COUNT - 1)];
+}
+
+// What the firmware is actually driving, for the serial log: the user can see
+// whether a brightness change reached the PWM.
+void ledLogState(const char* why) {
+  uint8_t r, g, b;
+  ledChannelsNow(&r, &g, &b);
+  Serial.printf("[I][led] %s: %s %s %s -> r=%u g=%u b=%u peak=%d invert=%d backlight=%d\n", why,
+                ledColorName(ledColor), ledEffectName(ledEffect), ledLevelName(ledLevel),
+                (unsigned)r, (unsigned)g, (unsigned)b, ledBrightnessNow(), (int)ledInvert,
+                backlightLevel());
 }

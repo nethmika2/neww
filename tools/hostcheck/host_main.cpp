@@ -7,6 +7,9 @@
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>
+#include <sys/time.h>
+#include <stdlib.h>
+#include <time.h>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -43,6 +46,7 @@ void hostSetMillis(unsigned long v);
 void hostSetMillisStep(unsigned long v);
 unsigned long hostAdvanceMillis(unsigned long by);
 unsigned long hostMillisValue();          // reads the clock without advancing it
+void hostSetClock(time_t t);              // sets the RTC the firmware reads (negative = real clock)
 esp_err_t hostAvrcRnCapHas(esp_avrc_rn_event_ids_t e);
 void hostAvrcReset();
 void hostMakeWav(const char *path, int seconds, int freq, uint32_t sampleRate);
@@ -753,10 +757,10 @@ static void testLed() {
   ledChannelsNow(&r0, &g0, &b0);
   CHECK(r0 > g0 && r0 > b0);
 
-  // Tasks drive the light while the screen is on, when the switch is on:
-  // focus fades amber, a short break breathes green, a long break blue, and
-  // music walks the colour wheel.
-  ledFollowApps = true;
+  // Tasks drive the light while the screen is on, when the show mode includes
+  // them: focus fades amber, a short break breathes green, a long break blue,
+  // and music walks the colour wheel.
+  ledShow = LED_S_APPS;
   screenOn = true;
   screensaverActive = false;
   pomoRunning = true;
@@ -784,15 +788,34 @@ static void testLed() {
   CHECK(r0 != r1 || g0 != g1 || b0 != b1);          // the wheel turns
   isPlaying = false;
 
-  // Switch it off and the LED stays dark while the panel is lit...
-  ledFollowApps = false;
+  // The chosen BRIGHTNESS must reach the app patterns too: it used to be
+  // ignored there, which made the control look dead.
+  ledShow = LED_S_APPS;
+  ledLevel = LED_L_LOW;
   pomoRunning = true;
   pomoMode = MODE_WORK;
+  hostSetMillis(0);
+  updateStatusLed();
+  int workLow = ledBrightnessNow();
+  ledLevel = LED_L_HIGH;
+  updateStatusLed();
+  int workHigh = ledBrightnessNow();
+  CHECK(workLow > 0 && workLow < workHigh);
+  ledLevel = LED_L_MED;
+
+  // DARK is the keep-awake-only mode; ALWAYS keeps the light on with nothing
+  // running and the screen lit.
+  ledShow = LED_S_DARK;
   updateStatusLed();
   CHECK_EQ(ledBrightnessNow(), 0);
+  ledShow = LED_S_ALWAYS;
   pomoRunning = false;
-  // ...but the dark screen still gets its keep-awake light, whatever the switch
-  // says.
+  updateStatusLed();
+  CHECK(ledBrightnessNow() > 0);
+
+  // Whatever the mode, the dark screen still gets its keep-awake light.
+  ledShow = LED_S_APPS;
+  pomoRunning = false;
   idleMode = IDLE_DARK;
   setScreenPower(false);
   updateStatusLed();
@@ -829,10 +852,172 @@ static void testLed() {
   CHECK_EQ(ledBrightnessNow(), 0);
   CHECK(!ledPreviewActive());
 
+  // Wiring: the other polarity mirrors every duty, which is what a clone board
+  // needs to look right.
+  ledShow = LED_S_ALWAYS;
+  setScreenPower(true);
+  ledLevel = LED_L_HIGH;
+  ledInvert = false;
+  hostSetMillis(0);
+  updateStatusLed();
+  int dutyNormal = hostPwmDuty(LED_CH_B);
+  ledInvert = true;
+  updateStatusLed();
+  int dutyInverted = hostPwmDuty(LED_CH_B);
+  CHECK_EQ(dutyNormal + dutyInverted, (int)LED_PWM_MAX);
+  ledInvert = false;
+  ledShow = LED_S_APPS;
+
   // The black level must never be dark enough to be mistaken for "unplugged".
   CHECK(TFT_BL_DIM_DUTY > 0);
   ledLevel = LED_L_MED;
   hostSetMillisStep(250);
+}
+
+// ===========================================================================
+// pomodoro dates: the history is keyed by the local calendar date
+// ===========================================================================
+// The host runs in whatever timezone it was started with, so this suite sets one
+// itself.  That is the point: the original bug only showed east of UTC, where
+// local midnight falls on the previous UTC day, and every date in the reports
+// came out a day early.
+static void testPomodoroDates() {
+  SUITE("pomodoro dates");
+  setenv("TZ", "IST-5:30", 1);              // Sri Lanka: UTC+05:30
+  tzset();
+
+  struct tm t = {};
+  t.tm_year = 2026 - 1900;
+  t.tm_mon = 8;                             // September
+  t.tm_mday = 25;
+  t.tm_hour = 12;                           // midday, so an off-by-one cannot hide
+  t.tm_min = 0;
+  t.tm_sec = 0;
+  t.tm_isdst = 0;
+  time_t noon = mktime(&t);
+  hostSetClock(noon);
+
+  uint32_t today = pomoTodayDay();
+  int y = 0, m = 0, d = 0;
+  pomoDayDate(today, &y, &m, &d);
+  CHECK_EQ(y, 2026);
+  CHECK_EQ(m, 9);
+  CHECK_EQ(d, 25);                          // not 24: the local date, not the UTC one
+  CHECK_EQ(pomoWeekday(today), 5);          // and 25 Sep 2026 really is a Friday
+
+  // Late local evening is the other half of the trap: 23:30 local is still the
+  // 25th, even though it is already the 26th in UTC.
+  t.tm_hour = 23;
+  t.tm_min = 30;
+  noon = mktime(&t);
+  hostSetClock(noon);
+  pomoDayDate(pomoTodayDay(), &y, &m, &d);
+  CHECK_EQ(d, 25);
+
+  // A block recorded now lands on that same day, and the report sees it.
+  pomoHistoryCount = 0;
+  for (int i = 0; i < POMO_HISTORY_DAYS; i++) pomoHistory[i] = PomoDayStat();
+  pomoRecordWorkBlock(25 * 60, true);
+  CHECK_EQ(pomoStatMinutes(today), 25);
+  CHECK_EQ(pomoStatBlocks(today), 1);
+  CHECK_EQ(pomoSumMinutes(-6, 0, *(new int)), 25);
+  CHECK_EQ(pomoStatMinutes(today - 1), 0);
+
+  // Work logged while the clock was unset is re-keyed onto the real calendar
+  // when a date arrives, keeping its order - and the anchor then holds that
+  // date, so a clock-less session continues from it instead of writing 1970.
+  pomoHistoryCount = 0;
+  for (int i = 0; i < POMO_HISTORY_DAYS; i++) pomoHistory[i] = PomoDayStat();
+  uint32_t anchorBefore = prefs.getULong("histday", 0);
+  hostSetMillisStep(0);
+  hostSetMillis(0);
+  {
+    // Two clock-less days: simulate by recording and then re-dating them.
+    pomoRecordWorkBlock(30 * 60, true);
+    pomoHistory[pomoHistoryCount - 1].synced = 0;
+    pomoHistory[pomoHistoryCount - 1].day = anchorBefore;
+    PomoDayStat second;
+    second.day = anchorBefore + 1;
+    second.minutes = 45;
+    second.blocks = 2;
+    second.synced = 0;
+    second.in_use = true;
+    pomoHistory[pomoHistoryCount++] = second;
+  }
+  pomoEnsureToday();
+  CHECK_EQ(pomoStatMinutes(today), 45);     // the newest clock-less day is today
+  CHECK_EQ(pomoStatMinutes(today - 1), 30);
+  CHECK_EQ(pomoHistory[pomoHistoryCount - 1].synced, 1);
+  CHECK_EQ(prefs.getULong("histday", 0), today);
+
+  // With no clock at all the anchor rolls over every 24 h of uptime, so a long
+  // session does not pile every day onto one date.
+  hostSetClock(0);                          // 1970: the clock was never set
+  CHECK(!pomoClockValid());
+  uint32_t dayAtBoot = pomoTodayDay();
+  CHECK_EQ(dayAtBoot, today);
+  hostSetMillis(86400000UL + 1000);          // a day and a bit later
+  CHECK_EQ(pomoTodayDay(), today + 1);
+  hostSetMillisStep(250);
+  hostSetMillis(0);
+
+  // A day that already has data must not gain a second row: that is what made
+  // the totals and the day view disagree.  Re-keying merges into it instead.
+  // (The clock is set back to the 25th for this part - re-keying only happens
+  // once a real date is known.)
+  t.tm_hour = 22;
+  t.tm_min = 0;
+  hostSetClock(mktime(&t));
+  pomoHistoryCount = 0;
+  for (int i = 0; i < POMO_HISTORY_DAYS; i++) pomoHistory[i] = PomoDayStat();
+  {
+    PomoDayStat real;
+    real.day = today;
+    real.minutes = 30;
+    real.blocks = 1;
+    real.synced = 1;
+    real.in_use = true;
+    pomoHistory[pomoHistoryCount++] = real;
+    PomoDayStat cl;
+    cl.day = anchorBefore;
+    cl.minutes = 45;
+    cl.blocks = 2;
+    cl.synced = 0;
+    cl.in_use = true;
+    pomoHistory[pomoHistoryCount++] = cl;
+  }
+  pomoEnsureToday();
+  CHECK_EQ(pomoHistoryCount, 1);
+  CHECK_EQ(pomoStatMinutes(today), 75);     // merged, not a duplicate
+  CHECK_EQ(pomoStatBlocks(today), 3);
+  CHECK_EQ(pomoSumMinutes(-6, 0, *(new int)), 75);
+
+  // ...and rows that were already duplicated in the stored table fold together
+  // when they are loaded, so the old data is repaired rather than kept wrong.
+  {
+    static uint8_t rows[2 * 8];
+    auto put = [](uint8_t* p, uint32_t day, uint16_t mins, uint8_t blocks) {
+      p[0] = (uint8_t)day; p[1] = (uint8_t)(day >> 8); p[2] = (uint8_t)(day >> 16); p[3] = (uint8_t)(day >> 24);
+      p[4] = (uint8_t)mins; p[5] = (uint8_t)(mins >> 8); p[6] = blocks; p[7] = 1;
+    };
+    put(rows, today, 20, 1);
+    put(rows + 8, today, 25, 2);
+    prefs.putInt("histN", 2);
+    prefs.putBytes("hist", rows, sizeof(rows));
+    loadPomoStore();
+    CHECK_EQ(pomoHistoryCount, 1);
+    CHECK_EQ(pomoStatMinutes(today), 45);
+    CHECK_EQ(pomoStatBlocks(today), 3);
+    prefs.putInt("histN", 0);
+    prefs.remove("hist");
+    pomoHistoryCount = 0;
+    for (int i = 0; i < POMO_HISTORY_DAYS; i++) pomoHistory[i] = PomoDayStat();
+  }
+
+  // Put the clock and the timezone back so later suites see the host as it was.
+  hostSetClock(-1);
+  unsetenv("TZ");
+  tzset();
 }
 
 static void testPersistence() {
@@ -1045,6 +1230,7 @@ int main() {
   testCalibration();
   testEarbuds();
   testLed();
+  testPomodoroDates();
   testPersistence();
   testRendering();
 

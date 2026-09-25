@@ -104,7 +104,8 @@ extern IdleMode idleMode;
 extern LedColor ledColor;
 extern LedEffect ledEffect;
 extern LedLevel ledLevel;
-extern bool ledFollowApps;
+extern LedShow ledShow;
+extern bool ledInvert;      // some boards wire the RGB LED the other way round
 extern unsigned long lastActivityTime, lastSaverTick;
 extern int clockX, clockY, lastDrawnMinute, homeLastMinute;
 

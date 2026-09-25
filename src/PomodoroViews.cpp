@@ -84,18 +84,9 @@ static const char* const MONTH_SHORT[12] = { "Jan", "Feb", "Mar", "Apr", "May", 
 
 // Civil-calendar decomposition of a day number (days since 1970-01-01).
 static void civilFromDays(uint32_t day, int& year, int& month, int& dayOfMonth) {
-  long z = (long)day + 719468;
-  long era = (z >= 0 ? z : z - 146096) / 146097;
-  unsigned long doe = (unsigned long)(z - era * 146097);
-  unsigned long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  long y = (long)yoe + era * 400;
-  unsigned long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  unsigned long mp = (5 * doy + 2) / 153;
-  unsigned long d = doy - (153 * mp + 2) / 5 + 1;
-  long m = (long)mp + (mp < 10 ? 3 : -9);
-  year = (int)(y + (m <= 2 ? 1 : 0));
-  month = (int)m;
-  dayOfMonth = (int)d;
+  // The store owns the conversion, so a printed date and the day number the
+  // history is keyed by cannot drift apart.
+  pomoDayDate(day, &year, &month, &dayOfMonth);
 }
 
 // "Wed 23 Sep" for a report header, or "Today" when the clock was never set.

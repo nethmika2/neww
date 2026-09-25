@@ -109,7 +109,33 @@ static void loadHistory() {
     }
     pomoHistory[j + 1] = key;
   }
+  // Fold duplicates: an older build could write two rows for one day, and that
+  // made the totals and the day view disagree.  Merging keeps the hours.
+  int out = 0;
+  for (int i = 0; i < pomoHistoryCount; i++) {
+    if (out > 0 && pomoHistory[out - 1].day == pomoHistory[i].day) {
+      long total = (long)pomoHistory[out - 1].minutes + pomoHistory[i].minutes;
+      pomoHistory[out - 1].minutes = (uint16_t)constrain(total, 0, 6000);
+      pomoHistory[out - 1].blocks = (uint8_t)constrain((int)pomoHistory[out - 1].blocks + pomoHistory[i].blocks, 0, 250);
+      pomoHistory[out - 1].synced = (pomoHistory[out - 1].synced || pomoHistory[i].synced) ? 1 : 0;
+      continue;
+    }
+    if (out != i) pomoHistory[out] = pomoHistory[i];
+    out++;
+  }
+  if (out != pomoHistoryCount) {
+    Serial.printf("[I][pomo] merged %d duplicate history row(s)\n", pomoHistoryCount - out);
+    for (int i = out; i < POMO_HISTORY_DAYS; i++) pomoHistory[i] = PomoDayStat();
+    pomoHistoryCount = out;
+    savePomoHistory();
+  }
 }
+
+// Declared up front: loadPomoStore() seeds the day anchor from the clock, and
+// both helpers live further down with the rest of the date handling.
+static uint32_t civilToDays(int year, int month, int dayOfMonth);
+static uint32_t pomoDayAnchor;
+bool pomoClockValid();
 
 void loadPomoStore() {
   pomoWorkTime = constrain(prefs.getInt("pomow", DEFAULT_WORK_TIME), MIN_WORK_MINUTES * 60, MAX_WORK_MINUTES * 60);
@@ -147,6 +173,18 @@ void loadPomoStore() {
   if (pomoActiveTask >= MAX_POMO_TASKS || (pomoActiveTask >= 0 && !pomoTasks[pomoActiveTask].in_use)) pomoActiveTask = -1;
 
   loadHistory();
+  // The day number to use while the clock is unset: the last known date, or the
+  // newest entry already in the history.
+  pomoDayAnchor = prefs.getULong("histday", 0);
+  if (pomoDayAnchor == 0 && pomoHistoryCount > 0) pomoDayAnchor = pomoHistory[pomoHistoryCount - 1].day;
+  if (pomoClockValid()) {
+    time_t now;
+    time(&now);
+    struct tm ti;
+    localtime_r(&now, &ti);
+    pomoDayAnchor = civilToDays(ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday);
+    prefs.putULong("histday", pomoDayAnchor);
+  }
 
   pomoHourlyDay = prefs.getULong("hrsd", 0xFFFFFFFFUL);
   size_t got = prefs.getBytes("hrs", pomoHourly, sizeof(pomoHourly));
@@ -315,17 +353,46 @@ bool pomoClockValid() {
   return getClock(h, m);
 }
 
+// Day numbers are the civil DATE, local time: 1970-01-01 is 0, and each day is
+// one more.  Converting the local date straight to a day number (rather than
+// taking midnight and dividing by 86400) is what keeps the reports on the same
+// date as the clock: east of UTC, local midnight falls on the previous UTC day,
+// which used to make every label a day early.
+static uint32_t civilToDays(int year, int month, int dayOfMonth) {
+  long y = year - (month <= 2 ? 1 : 0);
+  long era = (y >= 0 ? y : y - 399) / 400;
+  unsigned long yoe = (unsigned long)(y - era * 400);
+  unsigned long doy = (unsigned long)((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + dayOfMonth - 1);
+  unsigned long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return (uint32_t)(era * 146097 + (long)doe - 719468);
+}
+
+// The day number to use when the clock has never been set: the last one that was
+// known (persisted), advanced by whole days of uptime so a session that runs for
+// days still rolls over instead of piling everything onto one date.
 uint32_t pomoTodayDay() {
   time_t now;
   time(&now);
+  if (!pomoClockValid()) return pomoDayAnchor + (uint32_t)(millis() / 86400000UL);
   struct tm ti;
   localtime_r(&now, &ti);
-  ti.tm_hour = 0;
-  ti.tm_min = 0;
-  ti.tm_sec = 0;
-  time_t midnight = mktime(&ti);
-  if (midnight <= 0) return 0;
-  return (uint32_t)(midnight / 86400);
+  return civilToDays(ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday);
+}
+
+// The inverse, for every date the reports print.
+void pomoDayDate(uint32_t day, int* year, int* month, int* dayOfMonth) {
+  long z = (long)day + 719468;
+  long era = (z >= 0 ? z : z - 146096) / 146097;
+  unsigned long doe = (unsigned long)(z - era * 146097);
+  unsigned long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  long y = (long)yoe + era * 400;
+  unsigned long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  unsigned long mp = (5 * doy + 2) / 153;
+  unsigned long d = doy - (153 * mp + 2) / 5 + 1;
+  long m = (long)mp + (mp < 10 ? 3 : -9);
+  if (year) *year = (int)(y + (m <= 2 ? 1 : 0));
+  if (month) *month = (int)m;
+  if (dayOfMonth) *dayOfMonth = (int)d;
 }
 
 int pomoWeekday(uint32_t day) {
@@ -337,6 +404,22 @@ static int historyIndex(uint32_t day) {
   for (int i = 0; i < pomoHistoryCount; i++)
     if (pomoHistory[i].in_use && pomoHistory[i].day == day) return i;
   return -1;
+}
+
+static PomoDayStat* historyGet(uint32_t day, bool create);
+
+// Adds (or merges) minutes/blocks for one day.  Merging matters: a day can be
+// reached twice - a clock that synced late, a clock-less entry re-keyed onto a
+// real date - and two rows for one day made the reports disagree with each other
+// (the sums added both, the day view showed the first).
+static void historyAdd(uint32_t day, int minutes, int blocks, bool synced) {
+  PomoDayStat* e = historyGet(day, true);
+  if (!e) return;
+  long total = (long)e->minutes + minutes;
+  e->minutes = (uint16_t)constrain(total, 0, 6000);
+  int b = (int)e->blocks + blocks;
+  e->blocks = (uint8_t)constrain(b, 0, 250);
+  e->synced = (synced || e->synced) ? 1 : 0;
 }
 
 static PomoDayStat* historyGet(uint32_t day, bool create) {
@@ -358,14 +441,32 @@ static PomoDayStat* historyGet(uint32_t day, bool create) {
 void pomoEnsureToday() {
   uint32_t today = pomoTodayDay();
   bool valid = pomoClockValid();
-  // Entries recorded before the clock was ever synced carry an uptime day
-  // number.  As soon as a real date is available, move the newest of them onto
-  // today instead of orphaning the work that was already logged.
-  if (valid && pomoHistoryCount > 0) {
-    PomoDayStat& last = pomoHistory[pomoHistoryCount - 1];
-    if (last.in_use && !last.synced) {
-      if (last.day != today) last.day = today;
-      last.synced = 1;
+  if (valid) {
+    // Remember the real date so a later session without a clock continues from
+    // it instead of dropping work into 1970.
+    if (pomoDayAnchor != today) {
+      pomoDayAnchor = today;
+      prefs.putULong("histday", pomoDayAnchor);
+    }
+    // Entries recorded while the clock was unset are moved onto the real
+    // calendar, newest to today and the ones before it stepping back a day, so
+    // the work that was already logged keeps its order and its hours.
+    int first = pomoHistoryCount;
+    while (first > 0 && !pomoHistory[first - 1].synced) first--;
+    int n = pomoHistoryCount - first;
+    if (n > 0) {
+      // Take the entries out and add them back onto the real calendar, so a day
+      // that already has data merges instead of gaining a second row.
+      PomoDayStat moved[POMO_HISTORY_DAYS];
+      for (int k = 0; k < n; k++) moved[k] = pomoHistory[first + k];
+      pomoHistoryCount = first;
+      for (int k = 0; k < n; k++) {
+        uint32_t back = (uint32_t)(n - 1 - k);
+        uint32_t day = (back > today) ? 0 : today - back;
+        historyAdd(day, moved[k].minutes, moved[k].blocks, true);
+      }
+      Serial.printf("[I][pomo] %d day(s) logged without a clock moved onto %lu\n", n,
+                    (unsigned long)today);
       savePomoHistory();
     }
   }
@@ -382,14 +483,7 @@ void pomoRecordWorkBlock(int seconds, bool countBlock) {
   bool valid = pomoClockValid();
   int mins = (seconds + 59) / 60;
   if (mins < 1) mins = 1;
-  PomoDayStat* e = historyGet(today, true);
-  if (e) {
-    long total = (long)e->minutes + mins;
-    e->minutes = (uint16_t)constrain(total, 0, 6000);
-    int blocks = (int)e->blocks + (countBlock ? 1 : 0);
-    e->blocks = (uint8_t)constrain(blocks, 0, 250);
-    e->synced = valid ? 1 : 0;
-  }
+  historyAdd(today, mins, countBlock ? 1 : 0, valid);
   int h, m;
   if (getClock(h, m) && h >= 0 && h < 24) {
     if (pomoHourlyDay != today) {
@@ -402,6 +496,9 @@ void pomoRecordWorkBlock(int seconds, bool countBlock) {
     prefs.putULong("hrsd", pomoHourlyDay);
   }
   savePomoHistory();
+  Serial.printf("[I][pomo] %d min -> day %lu (%s), total %u min today\n", mins,
+                (unsigned long)today, valid ? "dated" : "no clock yet",
+                (unsigned)pomoStatMinutes(today));
 }
 
 int pomoStatMinutes(uint32_t day) {

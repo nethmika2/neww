@@ -33,6 +33,9 @@ String pomoActiveTaskLabel();
 // ---- focus history / reports ----
 bool pomoClockValid();
 uint32_t pomoTodayDay();
+// The calendar date of a day number (both are local civil days, 1970-01-01 = 0),
+// so every printed date and the stored history agree.
+void pomoDayDate(uint32_t day, int* year, int* month, int* dayOfMonth);
 void pomoEnsureToday();  // day rollover + clock-sync re-keying
 // Credits finished focus time.  countBlock is false for a short skipped
 // block, which still counts towards the minutes but not to the block tally.
