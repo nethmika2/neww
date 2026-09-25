@@ -47,6 +47,7 @@ void hostSetMillisStep(unsigned long v);
 unsigned long hostAdvanceMillis(unsigned long by);
 unsigned long hostMillisValue();          // reads the clock without advancing it
 void hostSetClock(time_t t);              // sets the RTC the firmware reads (negative = real clock)
+void hostInjectTouch(bool down, int rawX, int rawY);   // simulated finger (raw panel values)
 esp_err_t hostAvrcRnCapHas(esp_avrc_rn_event_ids_t e);
 void hostAvrcReset();
 void hostMakeWav(const char *path, int seconds, int freq, uint32_t sampleRate);
@@ -1020,6 +1021,88 @@ static void testPomodoroDates() {
   tzset();
 }
 
+// ===========================================================================
+// graph zoom buttons
+// ===========================================================================
+// The + and - buttons stopped working on a calibrated panel: the press-and-hold
+// loop re-derived the touch position with the legacy axis mapping, so its hit
+// test failed and it gave up before zooming.  This suite drives a simulated
+// finger through the same calibration the main loop uses.
+static void testGraphZoom() {
+  SUITE("graph zoom");
+  hostSetMillisStep(250);
+  hostSetMillis(5000);
+
+  // A 4 point calibration where the legacy mapping would land somewhere else
+  // entirely: a raw (2500, 2200) is screen (238, 214) here - inside the + button
+  // - but the old code read it as (177, 153), which is not.
+  touchCalibrated = true;
+  tcalX[0] = 0.0952; tcalX[1] = 0.0;  tcalX[2] = 0.5;
+  tcalY[0] = 0.0;    tcalY[1] = 0.0975; tcalY[2] = 0.0;
+
+  int probeX = 0, probeY = 0;
+  hostInjectTouch(true, 2500, 2200);
+  CHECK(readCalibratedTouch(probeX, probeY));
+  CHECK_EQ(probeX, 239);      // rounding of the affine fit
+  CHECK_EQ(probeY, 214);
+  hostInjectTouch(false, 0, 0);
+
+  // A single tap on + zooms one step, and on - one step back.
+  currentState = STATE_GRAPH;
+  centerWorldX = 0.0;
+  centerWorldY = 0.0;
+  zoom = 15.0;
+  touchActive = false;
+  handleGraphTouch(true, 238, 214);              // tap the + button
+  double afterTap = zoom;
+  CHECK(afterTap > 15.0);
+  CHECK(afterTap < 15.0 * 1.2);                  // exactly one step, not many
+  touchActive = false;
+  handleGraphTouch(true, 290, 214);              // tap the - button
+  CHECK(zoom < afterTap);
+  CHECK(zoom > 15.0 * 0.9);
+
+  // Holding + keeps zooming, and letting go stops it.  This is the path that
+  // was dead on a calibrated panel.
+  zoom = 15.0;
+  centerWorldX = 0.0;
+  centerWorldY = 0.0;
+  hostSetMillis(20000);
+  hostInjectTouch(true, 2500, 2200);
+  touchActive = false;
+  handleGraphTouch(true, 238, 214);
+  double held = zoom;
+  hostInjectTouch(false, 0, 0);
+  CHECK(held > afterTap * 1.2);                  // a hold goes well past one step
+  CHECK(held < 15.0 * 8.0);                      // and stays bounded
+
+  // Pulling the finger off the button mid-hold stops the zoom (it does not keep
+  // running while the finger is somewhere else).
+  zoom = 15.0;
+  hostSetMillis(40000);
+  hostInjectTouch(true, 100, 100);               // raw -> screen (10, 9): elsewhere
+  touchActive = false;
+  handleGraphTouch(true, 238, 214);              // the tap still counts as one step
+  double offButton = zoom;
+  hostInjectTouch(false, 0, 0);
+  CHECK(offButton > 15.0 && offButton < 15.0 * 1.2);
+
+  // And the button cannot spin forever if the panel reports a stuck touch.
+  zoom = 15.0;
+  hostSetMillis(60000);
+  hostInjectTouch(true, 2500, 2200);             // never released
+  touchActive = false;
+  handleGraphTouch(true, 238, 214);
+  double stuck = zoom;
+  hostInjectTouch(false, 0, 0);
+  CHECK(stuck > 15.0 && stuck < 15.0 * 8.0);     // the hold limit stopped it
+
+  // Put the calibration back so later suites see a plain panel.
+  touchCalibrated = false;
+  hostSetMillis(0);
+  touchActive = false;
+}
+
 static void testPersistence() {
   SUITE("persistence");
   resetPomodoroState();
@@ -1230,6 +1313,7 @@ int main() {
   testCalibration();
   testEarbuds();
   testLed();
+  testGraphZoom();
   testPomodoroDates();
   testPersistence();
   testRendering();

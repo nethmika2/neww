@@ -19,6 +19,13 @@ private:
 
 void waitTouchRelease();
 
+// Reads the panel and returns the calibrated screen position, exactly as the
+// main loop computes it.  Any control that samples the touch itself (a
+// press-and-hold button, say) must use this: re-deriving the position from the
+// raw sample silently ignores the 4 point calibration, so its hit test fails on
+// a calibrated panel.
+bool readCalibratedTouch(int& sx, int& sy);
+
 // Maps a raw touch sample to screen pixels.  Returns true when the 4 point
 // calibration is in use (otherwise the stored min/max axis mapping is used).
 bool applyTouchCalibration(const TS_Point& raw, int& sx, int& sy);

@@ -37,6 +37,20 @@ extern const GFXfont FreeSansBold12pt7b = {nullptr, nullptr, 0, 0, 18};
 extern const GFXfont FreeSansBold18pt7b = {nullptr, nullptr, 0, 0, 25};
 extern const GFXfont FreeSansBold24pt7b = {nullptr, nullptr, 0, 0, 33};
 
+// ---- touch panel -----------------------------------------------------------
+// A simulated finger, so press-and-hold controls can be tested.  The coordinates
+// are RAW panel values: the firmware applies its own calibration to them.
+static bool hostTouchDown = false;
+static int hostTouchRawX = 0, hostTouchRawY = 0;
+void hostInjectTouch(bool down, int rawX, int rawY) {
+  hostTouchDown = down;
+  hostTouchRawX = rawX;
+  hostTouchRawY = rawY;
+}
+bool hostTouchSimulated() { return hostTouchDown; }
+int hostTouchXValue() { return hostTouchRawX; }
+int hostTouchYValue() { return hostTouchRawY; }
+
 // ---- clock -----------------------------------------------------------------
 // millis() advances on every call so that debounce and time based code paths
 // can be exercised from a single threaded test.

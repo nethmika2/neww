@@ -52,7 +52,22 @@ uint16_t SoftTouch::readCmd(uint8_t cmd) {
   return val;
 }
 
+#ifdef HOSTCHECK
+// Host build only: the tests drive the panel instead of the panel driving the
+// code, so a press-and-hold control can be exercised (the harness has no real
+// touch hardware).  The values live in the stubs.
+bool hostTouchSimulated();
+int hostTouchXValue();
+int hostTouchYValue();
+#endif
+
 bool SoftTouch::touched() {
+#ifdef HOSTCHECK
+  if (hostTouchSimulated()) {
+    last = TS_Point(hostTouchXValue(), hostTouchYValue(), 1000);
+    return true;
+  }
+#endif
   int z = readZ();
   if (z < TOUCH_Z_MIN) return false;
 
@@ -86,6 +101,19 @@ bool SoftTouch::touched() {
 
 TS_Point SoftTouch::getPoint() {
   return last;
+}
+
+// Samples the panel and converts to calibrated screen pixels, exactly as the
+// main loop does.  Controls that read the touch themselves (a press-and-hold
+// button) must use this so the 4 point calibration still applies.
+bool readCalibratedTouch(int& sx, int& sy) {
+  if (!ts.touched()) return false;
+  TS_Point p = ts.getPoint();
+  int x = 0, y = 0;
+  applyTouchCalibration(p, x, y);
+  sx = constrain(x, 0, 320);
+  sy = constrain(y, 0, 240);
+  return true;
 }
 
 // Waits for the finger to lift so one tap cannot trigger two actions.  The

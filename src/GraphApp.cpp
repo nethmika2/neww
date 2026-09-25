@@ -674,19 +674,34 @@ void handleTabTouch(int sx, int sy) {
   }
 }
 
+// One zoom step around the centre of the plot - not around the +/- button, which
+// would slide the view sideways as it scaled.
+static void applyZoomStep(double factor) {
+  zoomAt(factor, 160, 120);
+  traceActive = false;
+  needsFullWipe = true;
+  drawGraphScreen(true);
+}
+
+// A tap on + or - always zooms one step; holding it down keeps zooming until the
+// finger lifts or leaves the button.  Two bugs used to live here: the hold loop
+// only ran while the panel reported a touch (so a quick tap did nothing at all),
+// and it re-derived the position with the legacy axis mapping, which ignores the
+// 4 point calibration - on a calibrated panel the hit test then failed and the
+// button was dead.  The sample now comes from the same conversion as the main
+// loop, with a little slack because a finger drifts during a hold.
 void holdZoom(double factor, int rx, int ry, int rw, int rh) {
-  while (ts.touched()) {
-    TS_Point p = ts.getPoint();
-    int hw_x = touch_swap_xy ? p.y : p.x, hw_y = touch_swap_xy ? p.x : p.y;
-    int px = constrain(map(hw_x, touch_x_min, touch_x_max, 0, 320), 0, 320), py = constrain(map(hw_y, touch_y_min, touch_y_max, 0, 240), 0, 240);
-    if (!inRect(px, py, rx, ry, rw, rh)) break;
-    // Zoom around the centre of the plot, not the +/- button itself.
-    // zoomAt preserves the world coordinate under that centre.
-    zoomAt(factor, 160, 120);
-    traceActive = false;
-    needsFullWipe = true;
-    drawGraphScreen(false);
-    delay(20);
+  applyZoomStep(factor);
+  const int slack = 12;
+  const unsigned long holdLimit = 2500;      // bounded, so a stuck panel cannot hang
+  const double holdFactor = (factor > 1.0) ? 1.04 : 1.0 / 1.04;
+  unsigned long start = millis();
+  while (millis() - start < holdLimit) {
+    int px = 0, py = 0;
+    if (!readCalibratedTouch(px, py)) break;
+    if (!inRect(px, py, rx - slack, ry - slack, rw + 2 * slack, rh + 2 * slack)) break;
+    if (millis() - start > 350) applyZoomStep(holdFactor);   // tap = one step, hold = many
+    else delay(20);
   }
   drawGraphScreen(true);
 }
