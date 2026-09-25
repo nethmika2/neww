@@ -255,6 +255,11 @@ uint16_t analogReadMilliVolts(uint8_t pin);
 void ledcSetup(uint8_t chan, double freq, uint8_t res);
 void ledcAttachPin(uint8_t pin, uint8_t chan);
 void ledcWrite(uint8_t chan, uint32_t duty);
+// The host build models the 2.x core, whose LEDC calls take a channel.  This
+// records the last duty written per channel so tests can assert what the idle
+// modes light up (0..255).
+#define ESP_ARDUINO_VERSION_MAJOR 2
+int hostPwmDuty(int channel);
 double ledcReadFreq(uint8_t chan);
 
 // Advanced I/O helpers used by the ILI9341 driver on real hardware.

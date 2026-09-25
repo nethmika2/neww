@@ -97,7 +97,8 @@ extern bool textKbNumeric;
 // ==========================================
 // POWER, SCREENSAVER & CLOCK STATE
 // ==========================================
-extern bool screenOn, screensaverEnabled, screensaverActive, timeSynced, autoSyncBoot;
+extern bool screenOn, screensaverActive, timeSynced, autoSyncBoot;
+extern IdleMode idleMode;
 extern unsigned long lastActivityTime, lastSaverTick;
 extern int clockX, clockY, lastDrawnMinute, homeLastMinute;
 

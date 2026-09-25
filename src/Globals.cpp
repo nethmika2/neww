@@ -77,7 +77,8 @@ bool textKbNumeric = false;
 // ==========================================
 // POWER, SCREENSAVER & CLOCK STATE
 // ==========================================
-bool screenOn = true, screensaverEnabled = true, screensaverActive = false, timeSynced = false, autoSyncBoot = true;
+bool screenOn = true, screensaverActive = false, timeSynced = false, autoSyncBoot = true;
+IdleMode idleMode = IDLE_CLOCK;
 unsigned long lastActivityTime = 0, lastSaverTick = 0;
 int clockX = 160, clockY = 130, lastDrawnMinute = -1, homeLastMinute = -1;
 

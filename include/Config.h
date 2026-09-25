@@ -31,6 +31,24 @@
 #define USE_TOUCH_IRQ 0
 #define TOUCH_Z_MIN 150
 
+// On-board RGB LED (active LOW on this board) and the two PWM levels the idle
+// modes use.  The LED is the "still powered" load when the screen is dark; the
+// DIM level is a low backlight duty, which is the larger of the two loads
+// without lighting the panel up.
+#define LED_R_PIN 4
+#define LED_G_PIN 16
+#define LED_B_PIN 17
+#define LED_ACTIVE_LOW 1
+#define LED_PWM_FREQ 5000
+#define LED_PWM_BITS 8
+#define LED_PWM_MAX ((1 << LED_PWM_BITS) - 1)
+#define LED_CH_R 0
+#define LED_CH_G 1
+#define LED_CH_B 2
+#define TFT_BL_CH 3
+#define TFT_BL_FULL_DUTY 255
+#define TFT_BL_DIM_DUTY 70    // ~27%: keeps the pack loaded, panel stays almost black
+
 // SD SPI
 #define SD_MOSI 23
 #define SD_MISO 19

@@ -10,6 +10,8 @@
 // Screen power and screensaver
 bool displayActive();
 void setScreenPower(bool on);
+// Runs the idle logic for the current mode (called once per loop).
+void updateIdleScreen();
 void redrawCurrentScreen();
 void drawScreensaver();
 void updateScreensaver();
@@ -34,7 +36,11 @@ void drawStatusPill(int x, int y, int w, const char* text, uint16_t dotColor, ui
 void drawPanel(int x, int y, int w, int h, const char* title);
 void drawCard(int x, int y, int w, int h, bool active, int radius);
 void drawSectionLabel(const char* text, int x, int y);
-void drawSegmentedControl(int x, int y, int w, int h, const char* const* labels, int count, int activeIndex);
+// A pill-shaped switch.  The label font defaults to the bold 9 pt face; the
+// three-way controls in a narrow card pass NULL for the built-in 5x7 font,
+// which is what keeps "CLOCK" inside its own segment.
+void drawSegmentedControl(int x, int y, int w, int h, const char* const* labels, int count,
+                          int activeIndex, const GFXfont* font = &FreeSansBold9pt7b);
 void drawProgressBar(int x, int y, int w, int h, float pct, uint16_t color);
 void drawCrosshairTarget(int cx, int cy, int r, uint16_t color);
 void drawNoteIcon(int cx, int cy, int size, uint16_t color);

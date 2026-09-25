@@ -53,10 +53,21 @@ static void drawFieldLabel(const char* text, int x, int y, uint16_t color) {
 
 // A toggle card is a title line and a two-way switch, nothing else: the title
 // sits on the card's top left, the switch fills the lower part.
-static void drawToggleCard(int x, int y, const char* title, const char* const* labels, int active) {
+static void drawToggleCard(int x, int y, const char* title, const char* const* labels, int count,
+                           int active) {
   drawCard(x, y, CARD_W, CARD_H, false, RADIUS_MD);
   drawFieldLabel(title, x + 10, y + 8, MUTED_COLOR);
-  drawSegmentedControl(x + 10, y + 20, CARD_W - 20, 26, labels, 2, active);
+  // Three segments leave each label little room, so those use the built-in
+  // font; the two-way cards keep the bolder face.
+  drawSegmentedControl(x + 10, y + 20, CARD_W - 20, 26, labels, count, active,
+                       count > 2 ? NULL : &FreeSansBold9pt7b);
+}
+
+// Which segment of a card control a tap landed on (0 for a miss).
+static int segmentAt(int sx, int cardX, int count) {
+  if (sx < cardX + 10 || sx >= cardX + CARD_W - 10) return 0;
+  int seg = (sx - (cardX + 10)) / ((CARD_W - 20) / count);
+  return constrain(seg + 1, 1, count);
 }
 
 void drawSettingsScreen() {
@@ -64,16 +75,18 @@ void drawSettingsScreen() {
   drawScreenHeader("SETTINGS", true);
 
   static const char* const axisLabels[2] = { "NUM", "PI" };
-  static const char* const idleLabels[2] = { "CLOCK", "OFF" };
+  // The three idle modes all keep the board drawing power; they differ in what
+  // the screen does and which load does the work.
+  static const char* const idleLabels[3] = { "CLOCK", "DIM", "OFF" };
   static const char* const budLabels[2] = { "ON", "OFF" };
 
   drawSectionLabel("GRAPHER", 10, GROUP_1_LABEL_Y);
-  drawToggleCard(COL_L, ROW_1, "X AXIS", axisLabels, xAxisPi ? 1 : 0);
-  drawToggleCard(COL_R, ROW_1, "Y AXIS", axisLabels, yAxisPi ? 1 : 0);
+  drawToggleCard(COL_L, ROW_1, "X AXIS", axisLabels, 2, xAxisPi ? 1 : 0);
+  drawToggleCard(COL_R, ROW_1, "Y AXIS", axisLabels, 2, yAxisPi ? 1 : 0);
 
   drawSectionLabel("DEVICE", 10, GROUP_2_LABEL_Y);
-  drawToggleCard(COL_L, ROW_2, "IDLE SCREEN", idleLabels, screensaverEnabled ? 0 : 1);
-  drawToggleCard(COL_R, ROW_2, "EARBUDS", budLabels, earbudControlsEnabled() ? 0 : 1);
+  drawToggleCard(COL_L, ROW_2, "IDLE SCREEN", idleLabels, 3, (int)idleMode);
+  drawToggleCard(COL_R, ROW_2, "EARBUDS", budLabels, 2, earbudControlsEnabled() ? 0 : 1);
   // The counter is a live diagnostic: it moves as soon as the buds send
   // anything, so a hardware problem can be told apart from a settings problem
   // without a serial monitor.
@@ -131,12 +144,16 @@ void handleSettingsTouch(bool touched, int sx, int sy) {
     drawSettingsScreen();
     return;
   }
-  // Idle screen behaviour
+  // Idle screen behaviour: clock screensaver, dimmed panel, or dark with the
+  // on-board LED lit so the power bank keeps the board alive.
   if (inRect(sx, sy, COL_L + 10, ROW_2 + 20, CARD_W - 20, 26)) {
-    bool clock = sx <= COL_L + (CARD_W / 2);
+    int seg = segmentAt(sx, COL_L, 3);
     flashButton(COL_L + 10, ROW_2 + 20, CARD_W - 20, 26, RADIUS_SM);
-    screensaverEnabled = clock;
-    prefs.putBool("screensaver", screensaverEnabled);
+    idleMode = (IdleMode)(seg - 1);
+    prefs.putInt("idlemode", (int)idleMode);
+    showToast(idleMode == IDLE_CLOCK ? "Idle: clock screensaver"
+              : idleMode == IDLE_DIM ? "Idle: dim screen + LED"
+                                     : "Idle: dark screen + LED");
     drawSettingsScreen();
     return;
   }

@@ -4,6 +4,7 @@
 #include "Globals.h"
 #include "TouchDriver.h"
 #include "DisplayUtils.h"
+#include "Led.h"
 #include "Storage.h"
 #include "TimeService.h"
 #include "AudioApp.h"
@@ -27,8 +28,12 @@ void setup() {
   // First line of every boot: how much RAM the firmware left itself.  A number
   // far below ~200 KB is what slows the Bluetooth start down later.
   Serial.printf("[I][boot] free heap %u\n", (unsigned)ESP.getFreeHeap());
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
+  // Backlight and the on-board RGB LED share the PWM setup: the backlight is
+  // dimmable for the DIM idle mode, and the LED is the load that keeps a power
+  // bank awake when the screen is dark.
+  pwmBegin(TFT_BL, TFT_BL_CH);
+  setBacklight(TFT_BL_FULL_DUTY);
+  statusLedBegin();
   displaySPI.begin(TFT_CLK, TFT_MISO, TFT_MOSI, TFT_CS);
   tft.begin();
   tft.setRotation(1);
@@ -43,7 +48,14 @@ void setup() {
   // A 4 point calibration (when one has been stored) takes over from the
   // min/max axis mapping, which stays as the fallback for older devices.
   loadTouchCalibration();
-  screensaverEnabled = prefs.getBool("screensaver", true);
+  // Older builds stored a plain on/off for the idle screensaver; it maps onto
+  // the three idle modes, so an existing setting is not lost.
+  if (prefs.isKey("idlemode")) {
+    int m = prefs.getInt("idlemode", IDLE_CLOCK);
+    idleMode = (m == IDLE_DIM) ? IDLE_DIM : (m == IDLE_DARK) ? IDLE_DARK : IDLE_CLOCK;
+  } else {
+    idleMode = prefs.getBool("screensaver", true) ? IDLE_CLOCK : IDLE_DARK;
+  }
   autoSyncBoot = prefs.getBool("autosync", true);
   xAxisPi = prefs.getBool("xpi", false);
   yAxisPi = prefs.getBool("ypi", false);
@@ -115,15 +127,7 @@ void loop() {
 
   updateScreensaver();
 
-  if (currentState != STATE_CALIBRATE) {
-    unsigned long idle = millis() - lastActivityTime;
-    if (displayActive() && idle > SCREEN_TIMEOUT_MS) setScreenPower(false);
-    else if (screensaverActive && !pomoRunning && idle > SCREEN_TIMEOUT_MS + SAVER_OFF_MS) {
-      digitalWrite(TFT_BL, LOW);
-      screenOn = false;
-      screensaverActive = false;
-    }
-  }
+  updateIdleScreen();
 
   bool touched = ts.touched();
   TS_Point p;

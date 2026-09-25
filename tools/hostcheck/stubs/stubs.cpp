@@ -9,7 +9,6 @@
 #include <cstring>
 #include <cmath>
 #include "HostDraw.h"
-#include "Arduino.h"
 #include "Adafruit_GFX.h"
 #include "SPI.h"
 #include "Wire.h"
@@ -63,9 +62,16 @@ int digitalRead(uint8_t pin) { return gpioState.count(pin) ? gpioState[pin] : 0;
 int analogRead(uint8_t) { return 2048; }
 void analogWrite(uint8_t, int) {}
 uint16_t analogReadMilliVolts(uint8_t) { return 1650; }
+// ---- PWM (RGB LED + backlight) --------------------------------------------
+// The host build models the 2.x core: channels carry the duty, which is recorded
+// so the tests can assert exactly what the idle modes light up.
+static uint32_t pwmDuty[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 void ledcSetup(uint8_t, double, uint8_t) {}
 void ledcAttachPin(uint8_t, uint8_t) {}
-void ledcWrite(uint8_t, uint32_t) {}
+void ledcWrite(uint8_t channel, uint32_t duty) {
+  if (channel < 8) pwmDuty[channel] = duty;
+}
+int hostPwmDuty(int channel) { return (channel >= 0 && channel < 8) ? (int)pwmDuty[channel] : -1; }
 double ledcReadFreq(uint8_t) { return 0; }
 
 // ---- AVRCP target model ----------------------------------------------------

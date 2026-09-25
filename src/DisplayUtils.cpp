@@ -1,4 +1,5 @@
 #include "DisplayUtils.h"
+#include "Led.h"
 #include "TimeService.h"
 #include <string.h>
 
@@ -37,28 +38,70 @@ void redrawCurrentScreen() {
   else if (currentState == STATE_TEXT_KBD) drawTextKeyboardScreen(true);
 }
 
+// The backlight is on a PWM channel so the DIM idle mode can hold it at a low
+// duty.  255 is the same constant HIGH the firmware used before.
+static uint8_t backlightDuty = TFT_BL_FULL_DUTY;
+
+void setBacklight(uint8_t duty) {
+  backlightDuty = duty;
+  pwmWrite(TFT_BL, TFT_BL_CH, duty);
+}
+
+int backlightLevel() { return backlightDuty; }
+
+// One place decides what "the screen is not needed" means: which load stays on
+// so a USB power bank keeps supplying the board.
+static void screenGoesDark() {
+  screensaverActive = false;
+  screenOn = false;
+  setBacklight(0);
+  statusLedIdle();          // full white: the pack must see a load
+}
+
 void setScreenPower(bool on) {
   if (on) {
     if (!screenOn || screensaverActive) {
-      digitalWrite(TFT_BL, HIGH);
+      setBacklight(TFT_BL_FULL_DUTY);
+      statusLedOff();       // the panel is lit again, the LED is not needed
       screenOn = true;
       screensaverActive = false;
       redrawCurrentScreen();
     }
     lastActivityTime = millis();
   } else {
-    if (screensaverEnabled) {
+    if (idleMode == IDLE_CLOCK) {
+      // The clock is drawn on the panel, so it needs the panel lit and the LED
+      // is not doing any work.
+      setBacklight(TFT_BL_FULL_DUTY);
+      statusLedOff();
       screensaverActive = true;
       lastSaverTick = millis();
       randomSeed(millis());
       clockX = random(60, 260);
       clockY = random(70, 190);
       drawScreensaver();
-    } else {
-      digitalWrite(TFT_BL, LOW);
-      screenOn = false;
+    } else if (idleMode == IDLE_DIM) {
+      // Not fully dark: a low backlight duty is a bigger, steadier load than
+      // the LED alone, and the panel stays almost black.
       screensaverActive = false;
+      screenOn = false;
+      setBacklight(TFT_BL_DIM_DUTY);
+      statusLedIdle();
+    } else {
+      screenGoesDark();
     }
+  }
+}
+
+// Called every loop: the screensaver still hands over to the dark state (and the
+// LED) after the long saver timeout.
+void updateIdleScreen() {
+  if (currentState == STATE_CALIBRATE) return;
+  unsigned long idle = millis() - lastActivityTime;
+  if (displayActive() && idle > SCREEN_TIMEOUT_MS) {
+    setScreenPower(false);
+  } else if (screensaverActive && !pomoRunning && idle > SCREEN_TIMEOUT_MS + SAVER_OFF_MS) {
+    screenGoesDark();
   }
 }
 
@@ -187,7 +230,8 @@ void drawSectionLabel(const char* text, int x, int y) {
 // A pill shaped switch: the active half is filled with the accent colour and
 // the labels are painted on top, which reads much cleaner than N separate
 // buttons while costing the same number of primitives.
-void drawSegmentedControl(int x, int y, int w, int h, const char* const* labels, int count, int activeIndex) {
+void drawSegmentedControl(int x, int y, int w, int h, const char* const* labels, int count,
+                          int activeIndex, const GFXfont* font) {
   if (count < 1) return;
   tft.fillRoundRect(x, y, w, h, h / 2, SURFACE_COLOR);
   tft.drawRoundRect(x, y, w, h, h / 2, BTN_OUTLINE);
@@ -200,7 +244,10 @@ void drawSegmentedControl(int x, int y, int w, int h, const char* const* labels,
       tft.fillRoundRect(sx, y + 2, sw, h - 4, (h - 4) / 2, ACCENT_COLOR);
       tft.drawRoundRect(sx, y + 2, sw, h - 4, (h - 4) / 2, brighten565(ACCENT_COLOR, 4));
     }
-    printCentered(labels[i], sx + (sw / 2), y + (h / 2) + 6, &FreeSansBold9pt7b, active ? BG_COLOR : MUTED_COLOR);
+    // GFX faces are positioned by their baseline; the built-in 5x7 font is
+    // anchored at the top left of its cell, so it needs the other offset.
+    int labelY = (h / 2) + (font ? 6 : -4);
+    printCentered(labels[i], sx + (sw / 2), y + labelY, font, active ? BG_COLOR : MUTED_COLOR);
   }
 }
 

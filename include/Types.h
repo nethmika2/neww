@@ -17,6 +17,17 @@ enum AppState {
   STATE_TEXT_KBD
 };
 
+// What happens when the screen has been idle for a while.  Every one of these
+// keeps the board drawing power, because a power bank that sees no load cuts
+// the device off: CLOCK leaves the panel on with the drifting clock, DIM keeps
+// the backlight at a low duty, DARK turns the backlight off and hands the job to
+// the on-board RGB LED at full brightness.
+enum IdleMode {
+  IDLE_CLOCK = 0,
+  IDLE_DIM,
+  IDLE_DARK
+};
+
 enum PomoMode {
   MODE_WORK,
   MODE_SHORT_BREAK,

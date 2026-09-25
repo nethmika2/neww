@@ -21,6 +21,7 @@
 #include "Config.h"
 #include "Types.h"
 #include "DisplayUtils.h"
+#include "Led.h"
 #include "PomodoroApp.h"
 #include "PomodoroStore.h"
 #include "KeyboardApp.h"
@@ -594,6 +595,81 @@ static void testEarbuds() {
 // ===========================================================================
 // persistence
 // ===========================================================================
+// ===========================================================================
+// idle screen + the RGB LED keep-awake load
+// ===========================================================================
+// The point of this suite is that the board never sits in a state where a USB
+// power bank could think it was unplugged: whatever the idle mode, something is
+// still drawing current when the screen is not wanted.
+static void testIdleLed() {
+  SUITE("idle led");
+  pomoRunning = false;
+  currentState = STATE_HOME;
+
+  // DARK: backlight off, RGB LED full white (active LOW, so duty 0 = on).
+  idleMode = IDLE_DARK;
+  screenOn = true;
+  screensaverActive = false;
+  setScreenPower(false);
+  CHECK(!screenOn);
+  CHECK_EQ(statusLedBrightness(), 255);
+  CHECK_EQ(hostPwmDuty(LED_CH_R), 0);
+  CHECK_EQ(hostPwmDuty(LED_CH_G), 0);
+  CHECK_EQ(hostPwmDuty(LED_CH_B), 0);
+  CHECK_EQ(backlightLevel(), 0);
+  CHECK_EQ(hostPwmDuty(TFT_BL_CH), 0);
+
+  // DIM: the panel is not black, but it is dark, and the LED is lit as well.
+  idleMode = IDLE_DIM;
+  screenOn = true;
+  setScreenPower(false);
+  CHECK(!screenOn);
+  CHECK_EQ(backlightLevel(), TFT_BL_DIM_DUTY);
+  CHECK(hostPwmDuty(TFT_BL_CH) < (int)TFT_BL_FULL_DUTY);
+  CHECK_EQ(statusLedBrightness(), 255);
+
+  // CLOCK: the screensaver keeps the panel lit, so the LED is not needed.
+  idleMode = IDLE_CLOCK;
+  screenOn = true;
+  setScreenPower(false);
+  CHECK(screensaverActive);
+  CHECK_EQ(statusLedBrightness(), 0);
+  CHECK_EQ(backlightLevel(), TFT_BL_FULL_DUTY);
+
+  // ...and after the long saver timeout the screen goes dark and the LED takes
+  // over, which is the case the user hit with the screensaver switched off.
+  lastActivityTime = 0;
+  hostSetMillis(SCREEN_TIMEOUT_MS + SAVER_OFF_MS + 1000);
+  updateIdleScreen();
+  CHECK(!screensaverActive);
+  CHECK(!screenOn);
+  CHECK_EQ(statusLedBrightness(), 255);
+  CHECK_EQ(backlightLevel(), 0);
+
+  // Waking restores the panel fully and puts the LED out again.
+  setScreenPower(true);
+  CHECK(screenOn);
+  CHECK_EQ(statusLedBrightness(), 0);
+  CHECK_EQ(backlightLevel(), TFT_BL_FULL_DUTY);
+  CHECK_EQ(hostPwmDuty(TFT_BL_CH), (int)TFT_BL_FULL_DUTY);
+
+  // Idling into DARK on the loop path (not just via setScreenPower) and then
+  // waking works the same way.
+  idleMode = IDLE_DARK;
+  hostAdvanceMillis(1000);
+  lastActivityTime = millis() - (SCREEN_TIMEOUT_MS + 5000);
+  updateIdleScreen();
+  CHECK(!screenOn);
+  CHECK_EQ(statusLedBrightness(), 255);
+  setScreenPower(true);
+  CHECK_EQ(statusLedBrightness(), 0);
+  CHECK_EQ(backlightLevel(), TFT_BL_FULL_DUTY);
+
+  // The black level must never be dark enough to be mistaken for "unplugged".
+  CHECK(TFT_BL_DIM_DUTY > 0);
+  idleMode = IDLE_CLOCK;
+}
+
 static void testPersistence() {
   SUITE("persistence");
   resetPomodoroState();
@@ -797,6 +873,7 @@ int main() {
   testKeyboard();
   testCalibration();
   testEarbuds();
+  testIdleLed();
   testPersistence();
   testRendering();
 
