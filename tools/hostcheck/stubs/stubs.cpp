@@ -42,6 +42,7 @@ extern const GFXfont FreeSansBold24pt7b = {nullptr, nullptr, 0, 0, 33};
 static unsigned long hostMillis = 0;
 static unsigned long hostMillisStep = 250;
 void hostSetMillis(unsigned long v) { hostMillis = v; }
+unsigned long hostMillisValue() { return hostMillis; }
 void hostSetMillisStep(unsigned long v) { hostMillisStep = v; }
 unsigned long hostAdvanceMillis(unsigned long by) { hostMillis += by; return hostMillis; }
 unsigned long millis() {

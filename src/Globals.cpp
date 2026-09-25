@@ -79,6 +79,12 @@ bool textKbNumeric = false;
 // ==========================================
 bool screenOn = true, screensaverActive = false, timeSynced = false, autoSyncBoot = true;
 IdleMode idleMode = IDLE_CLOCK;
+// Violet, a linear fade, and 110/255: full brightness white on the LED is
+// uncomfortably bright, so the default is well below it.
+LedColor ledColor = LED_C_VIOLET;
+LedEffect ledEffect = LED_E_FADE;
+LedLevel ledLevel = LED_L_MED;
+bool ledFollowApps = true;
 unsigned long lastActivityTime = 0, lastSaverTick = 0;
 int clockX = 160, clockY = 130, lastDrawnMinute = -1, homeLastMinute = -1;
 

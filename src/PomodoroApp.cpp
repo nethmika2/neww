@@ -1,4 +1,5 @@
 #include "PomodoroApp.h"
+#include "Led.h"
 #include <math.h>
 #include "Globals.h"
 #include "DisplayUtils.h"
@@ -303,6 +304,7 @@ void pomoTick() {
   // The phase is over: credit the focus block, line up the next phase and say
   // what happened (the display wakes up for the announcement).
   String msg = pomoCompletePhase(true);
+  ledAlert(2000);                 // three red flashes, even if the screen is dark
   setScreenPower(true);
   if (currentState == STATE_POMODORO) {
     // The toast paints over the screen, so the timer view is redrawn after it

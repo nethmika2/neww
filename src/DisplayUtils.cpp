@@ -38,31 +38,21 @@ void redrawCurrentScreen() {
   else if (currentState == STATE_TEXT_KBD) drawTextKeyboardScreen(true);
 }
 
-// The backlight is on a PWM channel so the DIM idle mode can hold it at a low
-// duty.  255 is the same constant HIGH the firmware used before.
-static uint8_t backlightDuty = TFT_BL_FULL_DUTY;
-
-void setBacklight(uint8_t duty) {
-  backlightDuty = duty;
-  pwmWrite(TFT_BL, TFT_BL_CH, duty);
-}
-
-int backlightLevel() { return backlightDuty; }
+// The backlight PWM itself lives in Led.cpp, together with the RGB LED's; this
+// file only decides which duty each state wants.
 
 // One place decides what "the screen is not needed" means: which load stays on
 // so a USB power bank keeps supplying the board.
 static void screenGoesDark() {
   screensaverActive = false;
   screenOn = false;
-  setBacklight(0);
-  statusLedIdle();          // full white: the pack must see a load
+  setBacklight(0);          // updateStatusLed() takes over the keep-awake light
 }
 
 void setScreenPower(bool on) {
   if (on) {
     if (!screenOn || screensaverActive) {
       setBacklight(TFT_BL_FULL_DUTY);
-      statusLedOff();       // the panel is lit again, the LED is not needed
       screenOn = true;
       screensaverActive = false;
       redrawCurrentScreen();
@@ -73,7 +63,6 @@ void setScreenPower(bool on) {
       // The clock is drawn on the panel, so it needs the panel lit and the LED
       // is not doing any work.
       setBacklight(TFT_BL_FULL_DUTY);
-      statusLedOff();
       screensaverActive = true;
       lastSaverTick = millis();
       randomSeed(millis());
@@ -86,7 +75,6 @@ void setScreenPower(bool on) {
       screensaverActive = false;
       screenOn = false;
       setBacklight(TFT_BL_DIM_DUTY);
-      statusLedIdle();
     } else {
       screenGoesDark();
     }

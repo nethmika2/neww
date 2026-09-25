@@ -48,6 +48,16 @@ void setup() {
   // A 4 point calibration (when one has been stored) takes over from the
   // min/max axis mapping, which stays as the fallback for older devices.
   loadTouchCalibration();
+  {
+    int c = prefs.getInt("ledcolor", LED_C_VIOLET);
+    int e = prefs.getInt("ledeffect", LED_E_FADE);
+    int l = prefs.getInt("ledlevel", LED_L_MED);
+    ledColor = (LedColor)constrain(c, 0, LED_C_COUNT - 1);
+    ledEffect = (LedEffect)constrain(e, 0, LED_E_COUNT - 1);
+    ledLevel = (LedLevel)constrain(l, 0, LED_L_COUNT - 1);
+    ledFollowApps = prefs.getBool("ledfollow", true);
+  }
+
   // Older builds stored a plain on/off for the idle screensaver; it maps onto
   // the three idle modes, so an existing setting is not lost.
   if (prefs.isKey("idlemode")) {
@@ -128,6 +138,7 @@ void loop() {
   updateScreensaver();
 
   updateIdleScreen();
+  updateStatusLed();
 
   bool touched = ts.touched();
   TS_Point p;

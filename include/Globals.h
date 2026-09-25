@@ -99,6 +99,12 @@ extern bool textKbNumeric;
 // ==========================================
 extern bool screenOn, screensaverActive, timeSynced, autoSyncBoot;
 extern IdleMode idleMode;
+// On-board RGB LED: what the idle light looks like, and whether the patterns
+// also follow the apps (focus, breaks, music) while the screen is on.
+extern LedColor ledColor;
+extern LedEffect ledEffect;
+extern LedLevel ledLevel;
+extern bool ledFollowApps;
 extern unsigned long lastActivityTime, lastSaverTick;
 extern int clockX, clockY, lastDrawnMinute, homeLastMinute;
 

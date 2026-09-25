@@ -6,6 +6,7 @@
 #include "TimeService.h"
 #include "TouchDriver.h"
 #include "EarbudControls.h"
+#include "Led.h"
 
 // Forward declarations
 void drawHomeScreen();
@@ -17,26 +18,45 @@ void drawCalibrationScreen();
 // Two labelled groups of toggle cards, then the clock panel.  Everything sits
 // on the same 8 px margin grid the other apps use, and the group captions use
 // the shared section rule so the page has a clear hierarchy.
+// Two pages under one tab strip: the device settings, and the on-board RGB LED
+// with its patterns.  Everything below the strip sits on the same 8 px grid.
+static const int TAB_X = 10;
+static const int TAB_Y = 37;
+static const int TAB_W = 300;
+static const int TAB_H = 22;
+static const int PAGE_TOP = 66;
+
 static const int CARD_W = 148;
-static const int CARD_H = 54;
+static const int CARD_H = 46;
 static const int COL_L = 10;
 static const int COL_R = 162;
-static const int GROUP_1_LABEL_Y = 42;
-static const int ROW_1 = 52;
-static const int GROUP_2_LABEL_Y = 116;
-static const int ROW_2 = 126;
+static const int GROUP_1_LABEL_Y = 66;
+static const int ROW_1 = 74;
+static const int GROUP_2_LABEL_Y = 126;
+static const int ROW_2 = 134;
 static const int CLOCK_CARD_X = 10;
-static const int CLOCK_CARD_Y = 190;
+static const int CLOCK_CARD_Y = 188;
 static const int CLOCK_CARD_W = 300;
-static const int CLOCK_CARD_H = 46;
+static const int CLOCK_CARD_H = 42;
 // The four clock actions form a 2x2 grid on the right of the panel; the time
 // and its sync state take the left half.
 static const int CLOCK_BTN_X0 = 152;
 static const int CLOCK_BTN_X1 = 234;
-static const int CLOCK_BTN_Y0 = 196;
-static const int CLOCK_BTN_Y1 = 217;
+static const int CLOCK_BTN_Y0 = 192;
+static const int CLOCK_BTN_Y1 = 212;
 static const int CLOCK_BTN_W = 76;
 static const int CLOCK_BTN_H = 18;
+
+// The LED page: three full rows of patterns, colours and brightness, then the
+// follow-apps switch beside the brightness.
+static const int LED_ROW_1 = 66;
+static const int LED_ROW_2 = 118;
+static const int LED_ROW_3 = 170;
+static const int LED_ROW_H = 46;
+
+static int settingsPage = 0;                 // 0 = device, 1 = LED
+
+int& settingsPageForTest() { return settingsPage; }
 
 static void clockBtnRect(int index, int& x, int& y) {
   x = (index % 2 == 0) ? CLOCK_BTN_X0 : CLOCK_BTN_X1;
@@ -53,26 +73,56 @@ static void drawFieldLabel(const char* text, int x, int y, uint16_t color) {
 
 // A toggle card is a title line and a two-way switch, nothing else: the title
 // sits on the card's top left, the switch fills the lower part.
-static void drawToggleCard(int x, int y, const char* title, const char* const* labels, int count,
-                           int active) {
-  drawCard(x, y, CARD_W, CARD_H, false, RADIUS_MD);
-  drawFieldLabel(title, x + 10, y + 8, MUTED_COLOR);
-  // Three segments leave each label little room, so those use the built-in
-  // font; the two-way cards keep the bolder face.
-  drawSegmentedControl(x + 10, y + 20, CARD_W - 20, 26, labels, count, active,
+static void drawSegCard(int x, int y, int w, const char* title, const char* const* labels, int count,
+                        int active) {
+  drawCard(x, y, w, CARD_H, false, RADIUS_MD);
+  drawFieldLabel(title, x + 10, y + 7, MUTED_COLOR);
+  // Three or more segments leave each label little room, so those use the
+  // built-in font; the two-way cards keep the bolder face.
+  drawSegmentedControl(x + 10, y + 19, w - 20, 24, labels, count, active,
                        count > 2 ? NULL : &FreeSansBold9pt7b);
 }
 
-// Which segment of a card control a tap landed on (0 for a miss).
-static int segmentAt(int sx, int cardX, int count) {
-  if (sx < cardX + 10 || sx >= cardX + CARD_W - 10) return 0;
-  int seg = (sx - (cardX + 10)) / ((CARD_W - 20) / count);
+// Which segment of a control a tap landed on (0 for a miss).  The control is
+// inset 10 px inside its card, which is where drawSegmentedControl puts it.
+static int segmentAt(int sx, int cardX, int cardW, int count) {
+  int pad = 10;
+  int innerW = cardW - 2 * pad;
+  if (sx < cardX + pad || sx >= cardX + cardW - pad || count < 1) return 0;
+  int seg = (sx - (cardX + pad)) / (innerW / count);
   return constrain(seg + 1, 1, count);
+}
+
+// The tab strip is shared: it has to be drawn on both pages, and a tap on it
+// switches pages rather than doing anything to the page below.
+static void drawSettingsTabs() {
+  static const char* const pages[2] = { "DEVICE", "LED" };
+  drawSegmentedControl(TAB_X, TAB_Y, TAB_W, TAB_H, pages, 2, settingsPage);
+}
+
+static void drawLedPage() {
+  static const char* const effectLabels[LED_E_COUNT] = { "FADE", "BREATHE", "CYCLE", "PULSE", "SOLID" };
+  static const char* const colorLabels[LED_C_COUNT] = { "BLUE", "VIOLET", "GREEN", "AMBER", "WHITE", "RED" };
+  static const char* const levelLabels[LED_L_COUNT] = { "LOW", "MED", "HIGH" };
+  static const char* const followLabels[2] = { "ON", "OFF" };
+
+  drawSegCard(10, LED_ROW_1, 300, "PATTERN", effectLabels, LED_E_COUNT, (int)ledEffect);
+  drawSegCard(10, LED_ROW_2, 300, "COLOUR", colorLabels, LED_C_COUNT, (int)ledColor);
+  drawSegCard(COL_L, LED_ROW_3, CARD_W, "BRIGHTNESS", levelLabels, LED_L_COUNT, (int)ledLevel);
+  drawSegCard(COL_R, LED_ROW_3, CARD_W, "FOLLOW APPS", followLabels, 2, ledFollowApps ? 0 : 1);
+  // Say what the LED is for: it is also the light that keeps a power bank
+  // supplying the board while the screen is dark.
+  printCentered("Also keeps a power bank awake when dark", 160, 226, NULL, MUTED_COLOR);
 }
 
 void drawSettingsScreen() {
   tft.fillScreen(BG_COLOR);
   drawScreenHeader("SETTINGS", true);
+  drawSettingsTabs();
+  if (settingsPage == 1) {
+    drawLedPage();
+    return;
+  }
 
   static const char* const axisLabels[2] = { "NUM", "PI" };
   // The three idle modes all keep the board drawing power; they differ in what
@@ -81,12 +131,12 @@ void drawSettingsScreen() {
   static const char* const budLabels[2] = { "ON", "OFF" };
 
   drawSectionLabel("GRAPHER", 10, GROUP_1_LABEL_Y);
-  drawToggleCard(COL_L, ROW_1, "X AXIS", axisLabels, 2, xAxisPi ? 1 : 0);
-  drawToggleCard(COL_R, ROW_1, "Y AXIS", axisLabels, 2, yAxisPi ? 1 : 0);
+  drawSegCard(COL_L, ROW_1, CARD_W, "X AXIS", axisLabels, 2, xAxisPi ? 1 : 0);
+  drawSegCard(COL_R, ROW_1, CARD_W, "Y AXIS", axisLabels, 2, yAxisPi ? 1 : 0);
 
   drawSectionLabel("DEVICE", 10, GROUP_2_LABEL_Y);
-  drawToggleCard(COL_L, ROW_2, "IDLE SCREEN", idleLabels, 3, (int)idleMode);
-  drawToggleCard(COL_R, ROW_2, "EARBUDS", budLabels, 2, earbudControlsEnabled() ? 0 : 1);
+  drawSegCard(COL_L, ROW_2, CARD_W, "IDLE SCREEN", idleLabels, 3, (int)idleMode);
+  drawSegCard(COL_R, ROW_2, CARD_W, "EARBUDS", budLabels, 2, earbudControlsEnabled() ? 0 : 1);
   // The counter is a live diagnostic: it moves as soon as the buds send
   // anything, so a hardware problem can be told apart from a settings problem
   // without a serial monitor.
@@ -98,7 +148,7 @@ void drawSettingsScreen() {
                  timeSynced ? PLOT_COLOR : MUTED_COLOR);
   tft.setFont(&FreeSansBold18pt7b);
   tft.setTextColor(timeSynced ? TEXT_COLOR : MUTED_COLOR);
-  tft.setCursor(CLOCK_CARD_X + 12, CLOCK_CARD_Y + 36);
+  tft.setCursor(CLOCK_CARD_X + 12, CLOCK_CARD_Y + 34);
   tft.print(getTimeString());
   tft.setFont(NULL);
 
@@ -126,6 +176,59 @@ void handleSettingsTouch(bool touched, int sx, int sy) {
     return;
   }
 
+  // Tab strip: DEVICE or LED.
+  if (inRect(sx, sy, TAB_X, TAB_Y, TAB_W, TAB_H)) {
+    flashButton(TAB_X, TAB_Y, TAB_W, TAB_H, TAB_H / 2);
+    settingsPage = (sx > TAB_X + TAB_W / 2) ? 1 : 0;
+    drawSettingsScreen();
+    return;
+  }
+
+  if (settingsPage == 1) {
+    // Every change previews itself for a couple of seconds: the LED is on the
+    // back of the board, so the light says what the setting does.
+    if (inRect(sx, sy, 10, LED_ROW_1, 300, CARD_H)) {
+      int seg = segmentAt(sx, 10, 300, LED_E_COUNT);
+      flashButton(10, LED_ROW_1, 300, LED_ROW_H, RADIUS_MD);
+      ledEffect = (LedEffect)(seg - 1);
+      prefs.putInt("ledeffect", (int)ledEffect);
+      ledPreview(ledColor, ledEffect, ledLevel);
+      showToast(String("LED ") + ledEffectName(ledEffect));
+      drawSettingsScreen();
+      return;
+    }
+    if (inRect(sx, sy, 10, LED_ROW_2, 300, CARD_H)) {
+      int seg = segmentAt(sx, 10, 300, LED_C_COUNT);
+      flashButton(10, LED_ROW_2, 300, LED_ROW_H, RADIUS_MD);
+      ledColor = (LedColor)(seg - 1);
+      prefs.putInt("ledcolor", (int)ledColor);
+      ledPreview(ledColor, ledEffect, ledLevel);
+      showToast(String("LED ") + ledColorName(ledColor));
+      drawSettingsScreen();
+      return;
+    }
+    if (inRect(sx, sy, COL_L, LED_ROW_3, CARD_W, CARD_H)) {
+      int seg = segmentAt(sx, COL_L, CARD_W, LED_L_COUNT);
+      flashButton(COL_L, LED_ROW_3, CARD_W, LED_ROW_H, RADIUS_MD);
+      ledLevel = (LedLevel)(seg - 1);
+      prefs.putInt("ledlevel", (int)ledLevel);
+      ledPreview(ledColor, ledEffect, ledLevel);
+      showToast(String("LED brightness ") + ledLevelName(ledLevel));
+      drawSettingsScreen();
+      return;
+    }
+    if (inRect(sx, sy, COL_R, LED_ROW_3, CARD_W, CARD_H)) {
+      int seg = segmentAt(sx, COL_R, CARD_W, 2);
+      flashButton(COL_R, LED_ROW_3, CARD_W, LED_ROW_H, RADIUS_MD);
+      ledFollowApps = (seg == 1);
+      prefs.putBool("ledfollow", ledFollowApps);
+      showToast(ledFollowApps ? "LED follows the apps" : "LED only when dark");
+      drawSettingsScreen();
+      return;
+    }
+    return;
+  }
+
   // X axis
   if (inRect(sx, sy, COL_L + 10, ROW_1 + 20, CARD_W - 20, 26)) {
     bool pi = sx > COL_L + (CARD_W / 2);
@@ -147,7 +250,7 @@ void handleSettingsTouch(bool touched, int sx, int sy) {
   // Idle screen behaviour: clock screensaver, dimmed panel, or dark with the
   // on-board LED lit so the power bank keeps the board alive.
   if (inRect(sx, sy, COL_L + 10, ROW_2 + 20, CARD_W - 20, 26)) {
-    int seg = segmentAt(sx, COL_L, 3);
+    int seg = segmentAt(sx, COL_L, CARD_W, 3);
     flashButton(COL_L + 10, ROW_2 + 20, CARD_W - 20, 26, RADIUS_SM);
     idleMode = (IdleMode)(seg - 1);
     prefs.putInt("idlemode", (int)idleMode);

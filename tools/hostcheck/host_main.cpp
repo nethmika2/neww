@@ -42,6 +42,7 @@
 void hostSetMillis(unsigned long v);
 void hostSetMillisStep(unsigned long v);
 unsigned long hostAdvanceMillis(unsigned long by);
+unsigned long hostMillisValue();          // reads the clock without advancing it
 esp_err_t hostAvrcRnCapHas(esp_avrc_rn_event_ids_t e);
 void hostAvrcReset();
 void hostMakeWav(const char *path, int seconds, int freq, uint32_t sampleRate);
@@ -596,78 +597,242 @@ static void testEarbuds() {
 // persistence
 // ===========================================================================
 // ===========================================================================
-// idle screen + the RGB LED keep-awake load
+// idle screen + the RGB LED
 // ===========================================================================
-// The point of this suite is that the board never sits in a state where a USB
-// power bank could think it was unplugged: whatever the idle mode, something is
-// still drawing current when the screen is not wanted.
-static void testIdleLed() {
+// Two things are being checked here: no idle state leaves the board looking
+// switched off to a USB power bank, and the LED's patterns and colours really
+// do follow the settings and the running task.
+static int peakOver(LedEffect effect, LedColor color, LedLevel level, int period, int step = 25) {
+  int peak = 0;
+  hostSetMillisStep(0);
+  for (int t = 0; t < period; t += step) {
+    hostSetMillis(1000 + t);
+    ledRequest(color, effect, level);
+    ledTick();
+    peak = max(peak, ledBrightnessNow());
+  }
+  return peak;
+}
+
+static void testLed() {
   SUITE("idle led");
   pomoRunning = false;
   currentState = STATE_HOME;
+  hostSetMillisStep(0);
+  // Earlier suites finish pomodoro phases, which fires an announcement; clear it
+  // so this suite starts from a known light state.
+  ledAlert(0);
+  hostSetMillis(1000);
 
-  // DARK: backlight off, RGB LED full white (active LOW, so duty 0 = on).
+  // DARK: backlight off, and the LED doing the keep-awake duty.
   idleMode = IDLE_DARK;
+  ledColor = LED_C_VIOLET;
+  ledEffect = LED_E_FADE;
+  ledLevel = LED_L_MED;
   screenOn = true;
   screensaverActive = false;
   setScreenPower(false);
+  updateStatusLed();
   CHECK(!screenOn);
-  CHECK_EQ(statusLedBrightness(), 255);
-  CHECK_EQ(hostPwmDuty(LED_CH_R), 0);
-  CHECK_EQ(hostPwmDuty(LED_CH_G), 0);
-  CHECK_EQ(hostPwmDuty(LED_CH_B), 0);
   CHECK_EQ(backlightLevel(), 0);
   CHECK_EQ(hostPwmDuty(TFT_BL_CH), 0);
+  CHECK(ledBrightnessNow() > 0);                    // never looks unplugged
+  CHECK(ledBrightnessNow() < 255);                  // and never full blast
 
-  // DIM: the panel is not black, but it is dark, and the LED is lit as well.
+  // DIM: the panel is not black, but it is dark, and the LED runs too.
   idleMode = IDLE_DIM;
   screenOn = true;
   setScreenPower(false);
+  updateStatusLed();
   CHECK(!screenOn);
   CHECK_EQ(backlightLevel(), TFT_BL_DIM_DUTY);
   CHECK(hostPwmDuty(TFT_BL_CH) < (int)TFT_BL_FULL_DUTY);
-  CHECK_EQ(statusLedBrightness(), 255);
+  CHECK(ledBrightnessNow() > 0);
 
   // CLOCK: the screensaver keeps the panel lit, so the LED is not needed.
   idleMode = IDLE_CLOCK;
   screenOn = true;
   setScreenPower(false);
+  updateStatusLed();
   CHECK(screensaverActive);
-  CHECK_EQ(statusLedBrightness(), 0);
   CHECK_EQ(backlightLevel(), TFT_BL_FULL_DUTY);
+  CHECK_EQ(ledBrightnessNow(), 0);
 
   // ...and after the long saver timeout the screen goes dark and the LED takes
-  // over, which is the case the user hit with the screensaver switched off.
-  lastActivityTime = 0;
-  hostSetMillis(SCREEN_TIMEOUT_MS + SAVER_OFF_MS + 1000);
+  // over, which is the case that used to switch the board off.
+  hostSetMillis(hostMillisValue() + SCREEN_TIMEOUT_MS + SAVER_OFF_MS + 5000);
+  lastActivityTime = millis() - (SCREEN_TIMEOUT_MS + SAVER_OFF_MS + 5000);
   updateIdleScreen();
+  updateStatusLed();
   CHECK(!screensaverActive);
   CHECK(!screenOn);
-  CHECK_EQ(statusLedBrightness(), 255);
   CHECK_EQ(backlightLevel(), 0);
+  CHECK(ledBrightnessNow() > 0);
 
-  // Waking restores the panel fully and puts the LED out again.
+  // Waking restores the panel fully and puts the LED out.
   setScreenPower(true);
+  updateStatusLed();
   CHECK(screenOn);
-  CHECK_EQ(statusLedBrightness(), 0);
   CHECK_EQ(backlightLevel(), TFT_BL_FULL_DUTY);
   CHECK_EQ(hostPwmDuty(TFT_BL_CH), (int)TFT_BL_FULL_DUTY);
+  CHECK_EQ(ledBrightnessNow(), 0);
 
-  // Idling into DARK on the loop path (not just via setScreenPower) and then
-  // waking works the same way.
+  // Brightness levels: LOW < MED < HIGH, and the default is not full blast.
+  CHECK(ledLevelPeak(LED_L_LOW) < ledLevelPeak(LED_L_MED));
+  CHECK(ledLevelPeak(LED_L_MED) < ledLevelPeak(LED_L_HIGH));
+  CHECK(ledLevelPeak(LED_L_HIGH) == 255);
+  CHECK(ledLevelPeak(LED_L_MED) <= 140);            // "100% is too much"
+
+  // FADE is a linear ramp: it rises to the level's peak and falls back, and the
+  // floor keeps it visible (and the power bank loaded) at the bottom.
+  int lowPeak = peakOver(LED_E_FADE, LED_C_VIOLET, LED_L_MED, 2600);
+  int hiPeak = peakOver(LED_E_FADE, LED_C_VIOLET, LED_L_HIGH, 2600);
+  CHECK_EQ(hiPeak, 255);
+  CHECK(lowPeak > 0 && lowPeak < hiPeak);
+
+  // The ramp starts at phase 0, so sampling at 0 / 650 / 1300 / 1950 ms of the
+  // 2600 ms period lands on the floor, the quarter, the peak and three quarters.
+  hostSetMillis(0);
+  ledRequest(LED_C_VIOLET, LED_E_FADE, LED_L_MED);
+  ledTick();
+  int atZero = ledBrightnessNow();
+  hostSetMillis(650);
+  ledTick();
+  int atQuarter = ledBrightnessNow();
+  hostSetMillis(1300);
+  ledTick();
+  int atHalf = ledBrightnessNow();
+  hostSetMillis(1950);
+  ledTick();
+  int atThreeQ = ledBrightnessNow();
+  CHECK(atZero > 0);                                // the floor, not black
+  CHECK(atQuarter > atZero && atHalf > atQuarter);  // straight ramp up
+  CHECK(atThreeQ < atHalf);                         // and straight back down
+  CHECK(abs((int)atQuarter - (int)atThreeQ) <= 12); // symmetric ramp
+  CHECK(abs((int)atHalf - lowPeak) <= 6);           // it reaches the peak
+
+  // BREATHE is the smooth one, CYCLE walks the colour wheel, PULSE is a
+  // sawtooth: all three move over time and none of them goes black.
+  for (LedEffect e : { LED_E_BREATHE, LED_E_CYCLE, LED_E_PULSE }) {
+    int minV = 255, maxV = 0;
+    hostSetMillisStep(0);
+    for (int t = 0; t < 3600; t += 50) {
+      hostSetMillis(5000 + t);
+      ledRequest(LED_C_BLUE, e, LED_L_MED);
+      ledTick();
+      minV = min(minV, ledBrightnessNow());
+      maxV = max(maxV, ledBrightnessNow());
+    }
+    CHECK(maxV > minV);                             // it animates
+    CHECK(minV > 0);                                // and never switches off
+  }
+
+  // CYCLE really does change colour, not just brightness.
+  uint8_t r0, g0, b0, r1, g1, b1;
+  hostSetMillis(0);
+  ledRequest(LED_C_BLUE, LED_E_CYCLE, LED_L_MED);
+  ledTick();
+  ledChannelsNow(&r0, &g0, &b0);
+  hostSetMillis(1800);
+  ledTick();
+  ledChannelsNow(&r1, &g1, &b1);
+  CHECK(r0 != r1 || g0 != g1 || b0 != b1);
+
+  // Colours are what they say: green is green, and so on.
+  hostSetMillis(0);
+  ledRequest(LED_C_GREEN, LED_E_SOLID, LED_L_HIGH);
+  ledTick();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(g0 > r0 && g0 > b0);
+  ledRequest(LED_C_BLUE, LED_E_SOLID, LED_L_HIGH);
+  ledTick();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(b0 > r0 && b0 > g0);
+  ledRequest(LED_C_RED, LED_E_SOLID, LED_L_HIGH);
+  ledTick();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(r0 > g0 && r0 > b0);
+
+  // Tasks drive the light while the screen is on, when the switch is on:
+  // focus fades amber, a short break breathes green, a long break blue, and
+  // music walks the colour wheel.
+  ledFollowApps = true;
+  screenOn = true;
+  screensaverActive = false;
+  pomoRunning = true;
+  pomoMode = MODE_WORK;
+  hostSetMillis(0);
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(r0 > 0 && r0 >= g0 && g0 > b0);             // amber
+  pomoMode = MODE_SHORT_BREAK;
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(g0 > 0 && g0 > r0 && g0 > b0);              // green
+  pomoMode = MODE_LONG_BREAK;
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(b0 > 0 && b0 > r0 && b0 > g0);              // blue
+  pomoRunning = false;
+  isPlaying = true;
+  hostSetMillis(0);
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  hostSetMillis(1800);
+  updateStatusLed();
+  ledChannelsNow(&r1, &g1, &b1);
+  CHECK(r0 != r1 || g0 != g1 || b0 != b1);          // the wheel turns
+  isPlaying = false;
+
+  // Switch it off and the LED stays dark while the panel is lit...
+  ledFollowApps = false;
+  pomoRunning = true;
+  pomoMode = MODE_WORK;
+  updateStatusLed();
+  CHECK_EQ(ledBrightnessNow(), 0);
+  pomoRunning = false;
+  // ...but the dark screen still gets its keep-awake light, whatever the switch
+  // says.
   idleMode = IDLE_DARK;
-  hostAdvanceMillis(1000);
-  lastActivityTime = millis() - (SCREEN_TIMEOUT_MS + 5000);
-  updateIdleScreen();
-  CHECK(!screenOn);
-  CHECK_EQ(statusLedBrightness(), 255);
+  setScreenPower(false);
+  updateStatusLed();
+  CHECK(ledBrightnessNow() > 0);
+
+  // An announcement flashes red over everything else.
+  hostSetMillis(20000);
+  ledAlert(2000);
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  hostSetMillis(20100);                    // inside a bright half of the flash
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(r0 > 0 && g0 == 0 && b0 == 0);
+  hostSetMillis(20200);                    // ...and the dark half of the flash
+  updateStatusLed();
+  CHECK_EQ(ledBrightnessNow(), 0);
+  CHECK(ledAlertActiveForTest());
+  hostSetMillis(23000);                            // the flash is over
+  ledRequest(LED_C_BLUE, LED_E_SOLID, LED_L_MED);
+  updateStatusLed();
+  CHECK(!ledAlertActiveForTest());
+
+  // Settings previews show the pattern even while everything else is idle.
   setScreenPower(true);
-  CHECK_EQ(statusLedBrightness(), 0);
-  CHECK_EQ(backlightLevel(), TFT_BL_FULL_DUTY);
+  idleMode = IDLE_CLOCK;
+  hostSetMillis(30000);
+  ledPreview(LED_C_AMBER, LED_E_PULSE, LED_L_HIGH);
+  updateStatusLed();
+  CHECK(ledBrightnessNow() > 0);
+  CHECK(ledPreviewActive());
+  hostSetMillis(33000);                            // preview expired
+  updateStatusLed();
+  CHECK_EQ(ledBrightnessNow(), 0);
+  CHECK(!ledPreviewActive());
 
   // The black level must never be dark enough to be mistaken for "unplugged".
   CHECK(TFT_BL_DIM_DUTY > 0);
-  idleMode = IDLE_CLOCK;
+  ledLevel = LED_L_MED;
+  hostSetMillisStep(250);
 }
 
 static void testPersistence() {
@@ -758,6 +923,12 @@ static void testRendering() {
                      drawTextKeyboardScreen(true);
                    }});
   shots.push_back({"06-settings", []() { currentState = STATE_SETTINGS; drawSettingsScreen(); }});
+  shots.push_back({"06b-settings-led", []() {
+                     currentState = STATE_SETTINGS;
+                     settingsPageForTest() = 1;
+                     drawSettingsScreen();
+                     settingsPageForTest() = 0;
+                   }});
   shots.push_back({"07-calibration", []() { currentState = STATE_CALIBRATE; drawCalibrationScreen(); }});
 
   for (auto &s : shots) {
@@ -873,7 +1044,7 @@ int main() {
   testKeyboard();
   testCalibration();
   testEarbuds();
-  testIdleLed();
+  testLed();
   testPersistence();
   testRendering();
 

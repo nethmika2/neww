@@ -17,6 +17,13 @@ enum AppState {
   STATE_TEXT_KBD
 };
 
+// On-board RGB LED: colour, animation shape and brightness.  The shapes all
+// keep a floor rather than a true black, because this light doubles as the load
+// that keeps a USB power bank awake while the screen is dark.
+enum LedColor { LED_C_BLUE = 0, LED_C_VIOLET, LED_C_GREEN, LED_C_AMBER, LED_C_WHITE, LED_C_RED, LED_C_COUNT };
+enum LedEffect { LED_E_FADE = 0, LED_E_BREATHE, LED_E_CYCLE, LED_E_PULSE, LED_E_SOLID, LED_E_COUNT };
+enum LedLevel { LED_L_LOW = 0, LED_L_MED, LED_L_HIGH, LED_L_COUNT };
+
 // What happens when the screen has been idle for a while.  Every one of these
 // keeps the board drawing power, because a power bank that sees no load cuts
 // the device off: CLOCK leaves the panel on with the drifting clock, DIM keeps
