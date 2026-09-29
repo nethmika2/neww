@@ -61,10 +61,19 @@
 #define SD_SPI_HZ 20000000
 
 // Wi-Fi & NTP Configuration
+// Printed on every boot so a serial log says which build is on the device.
+static const char* const FW_BUILD = "2026-09-29b (wifi teardown + ntp/http time)";
+
 static const char* const WIFI_SSID = "Dialog 4G New";
 static const char* const WIFI_PASS = "tgrd-0241320-";
 static const long GMT_OFFSET_SEC = 5 * 3600 + 30 * 60;
 static const int DST_OFFSET_SEC = 0;
+// Address-only time servers: some networks resolve names badly (or hand out a
+// DNS server that answers nothing) and some block NTP outright.  The IP
+// literals need no lookup, and the HTTP fallback in TimeService.cpp covers the
+// networks that drop UDP 123 as well.
+static const char* const NTP_IP_1 = "162.159.200.1";  // time.cloudflare.com
+static const char* const NTP_IP_2 = "216.239.35.0";   // time.google.com
 static const char* const NTP_1 = "ltentp1.dialog.lk";
 static const char* const NTP_2 = "ltentp2.dialog.lk";
 static const char* const NTP_3 = "pool.ntp.org";

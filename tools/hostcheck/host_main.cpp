@@ -55,6 +55,8 @@ void hostAvrcReset();
 void hostMakeWav(const char *path, int seconds, int freq, uint32_t sampleRate);
 void hostMakeFile(const char *path, const char *text);
 void hostSetNameBaseOnly(bool v);
+std::string &hostHttpResponse();
+std::string &hostHttpRequest();
 esp_err_t hostWifiStopCount();       // how many times the firmware stopped the radio
 
 static int failures = 0;
@@ -1263,6 +1265,43 @@ static void testAudio() {
 // still get the clock set, an access point that never answers must give up with
 // the radio shut down, and WiFi that works but NTP that does not must say so
 // instead of blaming the password.
+static time_t utcEpoch(int y, int mo, int d, int h, int mi, int s) {
+  struct tm t;
+  memset(&t, 0, sizeof(t));
+  t.tm_year = y - 1900;
+  t.tm_mon = mo - 1;
+  t.tm_mday = d;
+  t.tm_hour = h;
+  t.tm_min = mi;
+  t.tm_sec = s;
+  return timegm(&t);
+}
+
+// ===========================================================================
+// HTTP Date parsing (the last resort time source)
+// ===========================================================================
+static void testHttpDate() {
+  SUITE("http date");
+  // A Date header is GMT, so it must agree with the C library's own UTC
+  // conversion.  This is what the clock is set from when NTP is blocked.
+  time_t want = utcEpoch(2026, 9, 29, 12, 34, 56);
+  CHECK_EQ(parseHttpDate(" Sun, 29 Sep 2026 12:34:56 GMT"), want);
+  CHECK_EQ(parseHttpDate("29 Sep 2026 12:34:56 GMT"), want);           // no weekday
+  CHECK_EQ(parseHttpDate("Mon, 28 Sep 2026 12:34:56 GMT"), want - 86400);
+  CHECK_EQ(parseHttpDate("Sun, 29 SEP 2026 12:34:56 GMT"), want);     // case is not fixed
+
+  CHECK_EQ(parseHttpDate("Thu, 29 Feb 2024 00:00:00 GMT"), utcEpoch(2024, 2, 29, 0, 0, 0));   // leap day
+  CHECK_EQ(parseHttpDate("Thu, 01 Jan 2026 00:00:00 GMT"), utcEpoch(2026, 1, 1, 0, 0, 0));    // year rollover
+
+  // Nonsense must be refused, never turned into a clock that looks plausible.
+  CHECK_EQ(parseHttpDate("garbage"), 0);
+  CHECK_EQ(parseHttpDate("Sun, 29 Foo 2026 12:34:56 GMT"), 0);
+  CHECK_EQ(parseHttpDate("Sun, 32 Sep 2026 12:34:56 GMT"), 0);
+  CHECK_EQ(parseHttpDate("Sun, 29 Sep 1996 12:34:56 GMT"), 0);
+  CHECK_EQ(parseHttpDate("Sunday, Sep 29 2026 12:34:56 GMT"), 0);
+  CHECK_EQ(parseHttpDate(nullptr), 0);
+}
+
 static void testWifiSync() {
   SUITE("wifi sync");
   bool wasBt = btInitialized;
@@ -1277,7 +1316,7 @@ static void testWifiSync() {
   hostSetMillisStep(0);
   CHECK(!syncTimeNTP(true));
   CHECK_EQ(WiFi.hostBegins(), 0);
-  CHECK_EQ(hostWifiStopCount(), 0);          // the radio was never touched
+  CHECK_EQ(hostWifiStopCount(), 0);
   btInitialized = false;
 
   // The access point ignores the first probe and answers the second.
@@ -1290,7 +1329,9 @@ static void testWifiSync() {
   CHECK(syncTimeNTP(true));
   CHECK_EQ(WiFi.hostBegins(), 2);            // a single 8 second window is not enough
   CHECK(WiFi.hostDisconnects() >= 2);        // failed attempt + teardown
-  CHECK(hostWifiStopCount() >= 1);           // the radio is shut down, not left half up
+  // Never esp_wifi_stop(): hard-stopping the WiFi driver in the same boot as a
+  // Bluetooth start trips an internal assert when audio begins streaming.
+  CHECK_EQ(hostWifiStopCount(), 0);
   timeSynced = wasSynced;
 
   // No access point at all: give up after the retries, with the radio off.
@@ -1312,7 +1353,24 @@ static void testWifiSync() {
   CHECK(!syncTimeNTP(true));
   CHECK_EQ(WiFi.hostBegins(), 1);
   CHECK(!timeSynced);
-  CHECK(hostWifiStopCount() >= 1);
+  CHECK_EQ(hostWifiStopCount(), 0);
+
+  // NTP never answers but HTTP does: the Date header sets the clock, which is
+  // the only way a network that blocks NTP can still get the time.
+  WiFi.hostReset();
+  hostWifiStopReset();
+  WiFi.hostAnswerOnBegin(1);
+  hostSetClock(0);
+  hostSetMillis(0);
+  hostSetMillisStep(1000);
+  hostHttpResponse() = "HTTP/1.0 204 No Content\r\nDate: Tue, 29 Sep 2026 12:34:56 GMT\r\n\r\n";
+  CHECK(syncTimeNTP(true));
+  CHECK(timeSynced);
+  CHECK_EQ((long)time(nullptr), (long)utcEpoch(2026, 9, 29, 12, 34, 56));
+  CHECK_EQ(WiFi.hostLookups(), 3);                 // one name lookup per server
+  CHECK(hostHttpRequest().find("GET /") == 0);
+  CHECK(hostHttpRequest().find("Host: connectivitycheck.gstatic.com") != std::string::npos);
+  CHECK_EQ(hostWifiStopCount(), 0);
 
   WiFi.hostReset();
   hostSetMillisStep(0);
@@ -1533,6 +1591,7 @@ int main() {
   testLed();
   testGraphZoom();
   testAudio();
+  testHttpDate();
   testWifiSync();
   testPomodoroDates();
   testPersistence();

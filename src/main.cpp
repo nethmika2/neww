@@ -27,7 +27,7 @@ void setup() {
   delay(50);
   // First line of every boot: how much RAM the firmware left itself.  A number
   // far below ~200 KB is what slows the Bluetooth start down later.
-  Serial.printf("[I][boot] free heap %u\n", (unsigned)ESP.getFreeHeap());
+  Serial.printf("[I][boot] %s, free heap %u\n", FW_BUILD, (unsigned)ESP.getFreeHeap());
   // Backlight and the on-board RGB LED share the PWM setup: the backlight is
   // dimmable for the DIM idle mode, and the LED is the load that keeps a power
   // bank awake when the screen is dark.

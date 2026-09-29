@@ -51,7 +51,6 @@ bool hostTouchSimulated() { return hostTouchDown; }
 int hostTouchXValue() { return hostTouchRawX; }
 int hostTouchYValue() { return hostTouchRawY; }
 
-// ---- clock -----------------------------------------------------------------
 // millis() advances on every call so that debounce and time based code paths
 // can be exercised from a single threaded test.
 static unsigned long hostMillis = 0;
@@ -83,6 +82,14 @@ uint16_t analogReadMilliVolts(uint8_t) { return 1650; }
 // tests drive it here.  Negative means "use the real clock".
 static time_t hostClockOverride = -1;
 void hostSetClock(time_t t) { hostClockOverride = t; }
+
+// The firmware sets the RTC from an HTTP Date header (TimeService.cpp).  The
+// sandbox forbids the real call, so the host build records it in the same clock
+// the firmware reads back through time().
+extern "C" int settimeofday(const struct timeval *tv, const struct timezone *) {
+  if (tv) hostSetClock(tv->tv_sec);
+  return 0;
+}
 time_t time(time_t* out) {
   time_t t;
   if (hostClockOverride >= 0) {
