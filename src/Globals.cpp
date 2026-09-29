@@ -36,6 +36,7 @@ volatile uint32_t audioStreamPos = 0;
 unsigned long lastUiUpdateTime = 0, lastMusicBtnPress = 0;
 
 uint8_t* audioRingBuffer = nullptr;
+int audioRingBytes = 0;
 volatile int ringHead = 0, ringTail = 0;
 SemaphoreHandle_t audioMutex = NULL;
 TaskHandle_t audioTaskHandle = NULL;

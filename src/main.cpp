@@ -121,6 +121,7 @@ void loop() {
 
   if (trackFinished) {
     trackFinished = false;
+    Serial.printf("[I][audio] track finished\n");
     if (numTracks > 0) {
       currentTrack = (currentTrack + 1) % numTracks;
       playTrack(currentTrack);
@@ -140,6 +141,10 @@ void loop() {
     lastUiUpdateTime = millis();
     drawMusicScreen(false);
   }
+
+  // One [I][audio] line every few seconds while a track plays: it separates a
+  // slow card from a starved Bluetooth link when a stutter is reported.
+  audioLogStatsIfDue();
 
   pomoTick();
 

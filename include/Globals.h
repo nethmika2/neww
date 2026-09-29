@@ -49,6 +49,9 @@ extern volatile uint32_t audioStreamPos;
 extern unsigned long lastUiUpdateTime, lastMusicBtnPress;
 
 extern uint8_t* audioRingBuffer;
+// Bytes actually allocated for the ring (RING_BUF_SIZE unless the heap could
+// only spare a smaller block).  The ring maths uses this, never the constant.
+extern int audioRingBytes;
 extern volatile int ringHead, ringTail;
 extern SemaphoreHandle_t audioMutex;
 extern TaskHandle_t audioTaskHandle;

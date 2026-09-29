@@ -90,9 +90,11 @@ void handleHomeTouch(bool touched, int sx, int sy) {
       tft.fillScreen(BG_COLOR);
       printCentered("Initializing Audio...", 160, 100, &FreeSansBold9pt7b, TEXT_COLOR);
       // The check comes first and counts the ring buffer, so a failed attempt
-      // costs nothing: the 16 KB is not left allocated for the next try.
+      // costs nothing: no buffer is left allocated for the next try.
       uint32_t heap = (uint32_t)ESP.getFreeHeap();
-      uint32_t need = (uint32_t)BT_MIN_HEAP + (uint32_t)RING_BUF_SIZE;
+      // The floor, not the preferred size: the ring below steps down rather than
+      // refuse to start when the heap is tight.
+      uint32_t need = (uint32_t)BT_MIN_HEAP + (uint32_t)RING_BUF_SIZE_MIN;
       Serial.printf("[I][music] heap %u, Bluetooth needs %u\n", (unsigned)heap, (unsigned)need);
       if (heap < need) {
         printCentered("Not enough memory for Bluetooth", 160, 130, &FreeSans9pt7b, DEL_COLOR);
@@ -102,9 +104,18 @@ void handleHomeTouch(bool touched, int sx, int sy) {
         return;
       }
       if (!audioRingBuffer) {
-        audioRingBuffer = (uint8_t*)malloc(RING_BUF_SIZE);
-        if (audioRingBuffer) memset(audioRingBuffer, 0, RING_BUF_SIZE);
-        else {
+        // Biggest ring the heap can spare: more slack between the SD reader and
+        // the Bluetooth stream means fewer dropouts on a slow card.
+        const int ringSizes[3] = { RING_BUF_SIZE, RING_BUF_SIZE_ALT, RING_BUF_SIZE_MIN };
+        for (int i = 0; i < 3 && !audioRingBuffer; i++) {
+          audioRingBuffer = (uint8_t*)malloc(ringSizes[i]);
+          if (audioRingBuffer) {
+            memset(audioRingBuffer, 0, ringSizes[i]);
+            audioRingBytes = ringSizes[i];
+            Serial.printf("[I][music] ring buffer %d bytes\n", ringSizes[i]);
+          }
+        }
+        if (!audioRingBuffer) {
           printCentered("Out of memory!", 160, 130, &FreeSans9pt7b, DEL_COLOR);
           delay(2000);
           drawHomeScreen();
@@ -112,8 +123,11 @@ void handleHomeTouch(bool touched, int sx, int sy) {
         }
       }
       if (!audioTaskHandle) {
-        xTaskCreatePinnedToCore(audioFeederTask, "AudioFeeder", 4096, NULL, 2, &audioTaskHandle, 1);
+        // Priority above the UI loop and pinned to the core the Bluetooth stack
+        // does not own, so a screen repaint cannot delay an SD read.
+        xTaskCreatePinnedToCore(audioFeederTask, "AudioFeeder", 4096, NULL, 6, &audioTaskHandle, 0);
         delay(150);
+        Serial.printf("[I][music] feeder task on core 0 (prio 6)\n");
       }
       printCentered("Starting Bluetooth...", 160, 130, &FreeSans9pt7b, MUTED_COLOR);
       audioSystemReady = true;

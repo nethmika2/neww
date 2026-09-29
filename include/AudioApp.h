@@ -10,6 +10,22 @@ int getRingBufferAvailableRead();
 void audioFeederTask(void* pvParameters);
 int32_t get_audio_data(Frame* channels, int32_t frame_count);
 
+// One pass of the feeder: tops the ring up from the open file.  Returns the
+// number of bytes moved, 0 when there is nothing to do (ring full, paused, no
+// file, end of file already reached).  audioFeederTask() calls it in a loop;
+// the host tests call it directly.
+int audioFeederStep();
+
+// Telemetry, printed as a single [I][audio] line so a stutter can be told apart
+// from a slow card and from a starved Bluetooth link.
+uint32_t audioBytesFed();
+uint32_t audioStarveCount();
+uint32_t audioSilenceBytes();
+uint32_t audioFeederPasses();
+void audioStatsReset();
+void audioLogStats(const char* why);
+void audioLogStatsIfDue();
+
 // Audio playback management
 WavInfo parseWavHeader(File& f);
 void loadPlaylist();

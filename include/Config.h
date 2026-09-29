@@ -54,7 +54,11 @@
 #define SD_MISO 19
 #define SD_CLK 18
 #define SD_CS 5
-#define SD_SPI_HZ 10000000
+// The audio feeder reads 4 KB blocks while streaming, so the SD clock is a
+// throughput limit on playback, not just on the file listing: a card that
+// cannot keep up makes the earbuds mute and re-buffer.  20 MHz is fine for
+// every card seen so far, and setup() retries the mount at 4 MHz.
+#define SD_SPI_HZ 20000000
 
 // Wi-Fi & NTP Configuration
 static const char* const WIFI_SSID = "Dialog 4G New";
@@ -104,10 +108,19 @@ static const char* const NTP_3 = "pool.ntp.org";
 // ==========================================
 // 3. AUDIO & TIMING CONSTANTS
 // ==========================================
-#define RING_BUF_SIZE (16 * 1024)
-#define FEEDER_CHUNK 2048
+// The ring buffer is the slack between the SD reader and the Bluetooth stream.
+// 24 KB is ~140 ms of 44.1 kHz stereo, enough that a slow card read shows up as
+// a small jitter instead of a dropout.  setup picks the largest of these three
+// that the heap can spare (see HomeApp.cpp); the smallest is the floor below
+// which playback is not worth starting.
+#define RING_BUF_SIZE (24 * 1024)
+#define RING_BUF_SIZE_ALT (16 * 1024)
+#define RING_BUF_SIZE_MIN (8 * 1024)
+#define FEEDER_CHUNK 4096
 #define BT_MIN_HEAP 120000
 #define AUDIO_TEST_TONE 0
+// How often the [I][audio] telemetry line is printed while a track plays.
+#define AUDIO_LOG_PERIOD_MS 5000UL
 
 #define SCREEN_TIMEOUT_MS 60000UL
 #define SAVER_OFF_MS 600000UL

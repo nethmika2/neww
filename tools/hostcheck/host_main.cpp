@@ -36,6 +36,8 @@
 #include "CalibrationApp.h"
 #include "EarbudControls.h"
 #include "AudioApp.h"
+#include "TimeService.h"
+#include "WiFi.h"
 #include "MathEngine.h"
 #include "Storage.h"
 #include "esp_avrc_api.h"
@@ -53,6 +55,7 @@ void hostAvrcReset();
 void hostMakeWav(const char *path, int seconds, int freq, uint32_t sampleRate);
 void hostMakeFile(const char *path, const char *text);
 void hostSetNameBaseOnly(bool v);
+esp_err_t hostWifiStopCount();       // how many times the firmware stopped the radio
 
 static int failures = 0;
 static int checks = 0;
@@ -1103,6 +1106,221 @@ static void testGraphZoom() {
   touchActive = false;
 }
 
+// ===========================================================================
+// audio ring buffer, feeder and Bluetooth data callback
+// ===========================================================================
+// The player feeds the Bluetooth stack from a ring buffer that a background
+// task fills from the SD card.  Everything below runs on a deliberately small
+// ring (1024 bytes) and a deliberately small consumer chunk, so the wraparound,
+// the partial-block and the starved paths are all hit in a handful of KB
+// instead of the 24 KB a real card would need.
+static void testAudio() {
+  SUITE("audio");
+  hostSetMillis(1000);
+  hostSetMillisStep(0);
+
+  bool wasSdReady = sdReady;
+  int wasVolume = currentVolume;
+  sdReady = true;
+  audioSystemReady = true;
+  if (!audioMutex) audioMutex = xSemaphoreCreateMutex();
+  currentVolume = 100;                 // unity gain, so the bytes can be compared
+  applyVolume();
+  CHECK_EQ(audioGainQ8, 256);
+
+  SD.remove("/t.wav");
+  hostMakeWav("/t.wav", 1, 440, 44100);      // 1 s -> 176400 data bytes
+  loadPlaylist();
+  // The earbud suite puts its own WAVs on the card first, so find ours.
+  int wavIdx = -1;
+  for (int i = 0; i < numTracks; i++)
+    if (std::string(playlist[i].c_str()) == "t.wav") wavIdx = i;
+  CHECK(wavIdx >= 0);
+
+  audioRingBuffer = (uint8_t*)malloc(1024);
+  audioRingBytes = 1024;
+  memset(audioRingBuffer, 0, 1024);
+  ringHead = ringTail = 0;
+  fileReadDone = false;
+  trackFinished = false;
+  audioStatsReset();
+
+  playTrack(wavIdx);
+  CHECK(isPlaying);
+  CHECK(currentWav.valid);
+  CHECK_EQ(currentWav.sampleRate, 44100UL);
+  CHECK_EQ(currentWav.dataSize, 44100UL * 4UL);
+
+  // The same PCM straight from the file, to compare byte for byte.  A drop,
+  // a duplicate or a swap in the ring maths shows up here.
+  std::vector<uint8_t> expected((size_t)currentWav.dataSize);
+  {
+    fs::File f = SD.open("/t.wav");
+    f.seek(currentWav.dataStart);
+    CHECK_EQ(f.read(expected.data(), expected.size()), expected.size());
+  }
+
+  // The feeder tops the ring up and then leaves it alone: it must not wrap over
+  // bytes the consumer has not read yet.
+  int filled = 0;
+  for (int i = 0; i < 20; i++) filled += audioFeederStep();
+  CHECK_EQ(filled, 1023);                       // one full ring minus the guard byte
+  CHECK_EQ(getRingBufferAvailableRead(), 1023);
+  CHECK_EQ(audioFeederStep(), 0);               // nothing more fits
+  CHECK_EQ((int)audioBytesFed(), filled);
+
+  std::vector<Frame> out(111);                  // 444 bytes: not a feeder block
+  size_t off = 0;
+  int guard = 0;
+  while (off < expected.size() && guard++ < 4000) {
+    while (getRingBufferAvailableRead() < 444 && !fileReadDone) audioFeederStep();
+    // Only the bytes that were really in the ring are compared: the tail of a
+    // chunk that arrives after the file ended is silence, by design.
+    int have = std::min(getRingBufferAvailableRead(), 444);
+    CHECK_EQ(get_audio_data(out.data(), 111), 111);   // the callback always reports a full packet
+    size_t want = std::min<size_t>((size_t)have, expected.size() - off);
+    if (want == 0 || memcmp(out.data(), expected.data() + off, want) != 0) {
+      CHECK(false);                              // a lost byte, a swap or a duplicate
+      break;
+    }
+    off += want;
+  }
+  CHECK_EQ(off, expected.size());               // the whole track, in order
+  CHECK_EQ(audioBytesFed(), (uint32_t)expected.size());   // fed once, never twice
+
+  // Letting the ring run dry ends the track; the main loop starts the next one.
+  for (int i = 0; i < 5 && !trackFinished; i++) audioFeederStep();
+  CHECK(trackFinished);
+  CHECK(!isPlaying);
+
+  // A starved consumer still hands the link a full packet - of silence - and
+  // counts it, which is what the [I][audio] line reports.
+  audioStatsReset();
+  hostSetMillis(9000);
+  memset(out.data(), 0x7F, out.size() * sizeof(Frame));
+  CHECK_EQ(get_audio_data(out.data(), 111), 111);
+  CHECK_EQ(audioStarveCount(), 1);
+  CHECK_EQ(audioSilenceBytes(), 444);
+  bool silent = true;
+  for (size_t i = 0; i < out.size() * 2; i++)
+    if (((int16_t*)out.data())[i] != 0) silent = false;
+  CHECK(silent);
+
+  // A partly filled ring hands over the real bytes first and pads the rest, so
+  // a short read costs a fraction of a packet instead of all of it.
+  isPlaying = true;
+  fileReadDone = false;
+  ringHead = ringTail = 0;
+  for (int i = 0; i < 100; i++) audioRingBuffer[i] = (uint8_t)i;
+  ringHead = 100;
+  audioStatsReset();
+  memset(out.data(), 0x7F, out.size() * sizeof(Frame));
+  CHECK_EQ(get_audio_data(out.data(), 111), 111);
+  CHECK_EQ(audioStarveCount(), 1);
+  CHECK_EQ(audioSilenceBytes(), 344);           // 444 - 100
+  CHECK_EQ(((uint8_t*)out.data())[0], 0);
+  CHECK_EQ(((uint8_t*)out.data())[99], 99);
+  CHECK_EQ(((uint8_t*)out.data())[100], 0);
+  CHECK_EQ(getRingBufferAvailableRead(), 0);    // the real bytes were consumed
+
+  // The gain is applied on the way out.
+  isPlaying = true;
+  for (int i = 0; i < 8; i++) audioRingBuffer[i] = (uint8_t)(i + 1);
+  ringHead = 8;
+  ringTail = 0;
+  currentVolume = 50;
+  applyVolume();
+  CHECK_EQ(audioGainQ8, 128);
+  memset(out.data(), 0, out.size() * sizeof(Frame));
+  get_audio_data(out.data(), 2);                // 8 bytes = 2 frames
+  CHECK_EQ(((uint8_t*)out.data())[0], 0);       // 1 * 128 >> 8 = 0
+  CHECK_EQ(((uint8_t*)out.data())[1], 1);       // 2 * 128 >> 8 = 1
+  currentVolume = 100;
+  applyVolume();
+
+  // Put the globals back so the rendering shots see the card they expect.
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  audioFile = File();
+  isPlaying = false;
+  trackFinished = false;
+  fileReadDone = false;
+  numTracks = 0;
+  currentTrack = 0;
+  audioSystemReady = false;
+  currentVolume = wasVolume;
+  applyVolume();
+  SD.remove("/t.wav");
+  sdReady = wasSdReady;
+}
+
+// ===========================================================================
+// clock sync over WiFi
+// ===========================================================================
+// The panel cannot be driven for real here, so these tests only pin the retry
+// and teardown logic: an access point that answers on the second attempt must
+// still get the clock set, an access point that never answers must give up with
+// the radio shut down, and WiFi that works but NTP that does not must say so
+// instead of blaming the password.
+static void testWifiSync() {
+  SUITE("wifi sync");
+  bool wasBt = btInitialized;
+  bool wasSynced = timeSynced;
+
+  // A Bluetooth session owns the radio; the sync refuses instead of fighting it.
+  WiFi.hostReset();
+  hostWifiStopReset();
+  btInitialized = true;
+  hostSetClock(0);
+  hostSetMillis(0);
+  hostSetMillisStep(0);
+  CHECK(!syncTimeNTP(true));
+  CHECK_EQ(WiFi.hostBegins(), 0);
+  CHECK_EQ(hostWifiStopCount(), 0);          // the radio was never touched
+  btInitialized = false;
+
+  // The access point ignores the first probe and answers the second.
+  WiFi.hostReset();
+  hostWifiStopReset();
+  WiFi.hostAnswerOnBegin(2);
+  hostSetClock(1780000000);                  // a valid RTC is enough for NTP here
+  hostSetMillis(0);
+  hostSetMillisStep(1000);
+  CHECK(syncTimeNTP(true));
+  CHECK_EQ(WiFi.hostBegins(), 2);            // a single 8 second window is not enough
+  CHECK(WiFi.hostDisconnects() >= 2);        // failed attempt + teardown
+  CHECK(hostWifiStopCount() >= 1);           // the radio is shut down, not left half up
+  timeSynced = wasSynced;
+
+  // No access point at all: give up after the retries, with the radio off.
+  WiFi.hostReset();
+  hostWifiStopReset();
+  WiFi.hostAnswerOnBegin(0);
+  hostSetClock(0);
+  hostSetMillis(0);
+  CHECK(!syncTimeNTP(true));
+  CHECK_EQ(WiFi.hostBegins(), 2);
+  CHECK(WiFi.hostDisconnects() >= 2);
+  CHECK(!timeSynced);
+
+  // WiFi connects, NTP never answers: the message has to point at NTP.
+  WiFi.hostReset();
+  hostWifiStopReset();
+  WiFi.hostAnswerOnBegin(1);
+  hostSetMillis(0);
+  CHECK(!syncTimeNTP(true));
+  CHECK_EQ(WiFi.hostBegins(), 1);
+  CHECK(!timeSynced);
+  CHECK(hostWifiStopCount() >= 1);
+
+  WiFi.hostReset();
+  hostSetMillisStep(0);
+  hostSetClock(-1);
+  btInitialized = wasBt;
+  timeSynced = wasSynced;
+}
+
 static void testPersistence() {
   SUITE("persistence");
   resetPomodoroState();
@@ -1314,6 +1532,8 @@ int main() {
   testEarbuds();
   testLed();
   testGraphZoom();
+  testAudio();
+  testWifiSync();
   testPomodoroDates();
   testPersistence();
   testRendering();

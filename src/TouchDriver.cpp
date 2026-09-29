@@ -63,10 +63,12 @@ int hostTouchYValue();
 
 bool SoftTouch::touched() {
 #ifdef HOSTCHECK
-  if (hostTouchSimulated()) {
-    last = TS_Point(hostTouchXValue(), hostTouchYValue(), 1000);
-    return true;
-  }
+  // The simulated finger is the only touch there is on the host: the bit-banged
+  // path below would read the stubbed zeroed MISO line as a permanent press,
+  // which would make "tap to skip" cancel every wait in the tests.
+  if (!hostTouchSimulated()) return false;
+  last = TS_Point(hostTouchXValue(), hostTouchYValue(), 1000);
+  return true;
 #endif
   int z = readZ();
   if (z < TOUCH_Z_MIN) return false;

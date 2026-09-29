@@ -10,67 +10,153 @@ void drawHomeScreen();
 // ==========================================
 int getRingBufferAvailableWrite() {
   int head = ringHead, tail = ringTail;
-  if (head >= tail) return (RING_BUF_SIZE - 1) - (head - tail);
+  if (head >= tail) return (audioRingBytes - 1) - (head - tail);
   return tail - head - 1;
 }
 
 int getRingBufferAvailableRead() {
   int head = ringHead, tail = ringTail;
   if (head >= tail) return head - tail;
-  return RING_BUF_SIZE - (tail - head);
+  return audioRingBytes - (tail - head);
+}
+
+// ==========================================
+// TELEMETRY
+// ==========================================
+// Cheap counters, so the serial log can say whether a stutter came from the SD
+// side (fed KB/s well under 176), from the Bluetooth side (starve count rising
+// while the feed rate is fine) or from nowhere (both healthy - then the stutter
+// is on the earbud side).
+static volatile uint32_t stBytesFed = 0;
+static volatile uint32_t stStarve = 0;
+static volatile uint32_t stSilenceBytes = 0;
+static volatile uint32_t stPasses = 0;
+static unsigned long stLastStarveLog = 0;
+static unsigned long stLastLog = 0;
+static uint32_t stLastLogBytes = 0;
+
+uint32_t audioBytesFed() { return stBytesFed; }
+uint32_t audioStarveCount() { return stStarve; }
+uint32_t audioSilenceBytes() { return stSilenceBytes; }
+uint32_t audioFeederPasses() { return stPasses; }
+
+void audioStatsReset() {
+  stBytesFed = 0;
+  stStarve = 0;
+  stSilenceBytes = 0;
+  stPasses = 0;
+  stLastLogBytes = 0;
+  stLastLog = millis();
+}
+
+// A starvation is worth a line, but a long gap would print one per packet, so
+// it is rate limited to one per second.
+static void audioNoteStarve(int have, int need) {
+  stStarve++;
+  unsigned long now = millis();
+  if (now - stLastStarveLog < 1000) return;
+  stLastStarveLog = now;
+  Serial.printf("[I][audio] starved: %d of %d bytes in the ring (total %u)\n",
+                have, need, (unsigned)stStarve);
+}
+
+void audioLogStats(const char* why) {
+  unsigned long now = millis();
+  unsigned long dt = now - stLastLog;
+  if (dt == 0) dt = 1;
+  uint32_t fed = stBytesFed;
+  uint32_t kBps = (uint32_t)(((uint64_t)(fed - stLastLogBytes) * 1000ULL) / (dt * 1024ULL));
+  int fill = 0;
+  if (audioRingBuffer && audioRingBytes > 0) fill = (getRingBufferAvailableRead() * 100) / audioRingBytes;
+  Serial.printf("[I][audio] %s: fed %lu KB (%lu KB/s), ring %d%%, starve %lu (%lu ms silence), feeder %lu/s, playing %d\n",
+                why, (unsigned long)(fed / 1024), (unsigned long)kBps, fill,
+                (unsigned long)stStarve, (unsigned long)(stSilenceBytes / 176), (unsigned long)stPasses, isPlaying ? 1 : 0);
+  stLastLog = now;
+  stLastLogBytes = fed;
+}
+
+void audioLogStatsIfDue() {
+  if (!btInitialized || !isPlaying) return;
+  if (millis() - stLastLog < AUDIO_LOG_PERIOD_MS) return;
+  audioLogStats("5s");
+}
+
+// ==========================================
+// FEEDER
+// ==========================================
+// One pass: read a block from the file and push it into the ring.  The mutex is
+// taken here so the step is safe to call from the task and from a test alike.
+int audioFeederStep() {
+  static uint8_t tempBuf[FEEDER_CHUNK];
+  if (!isPlaying || !audioRingBuffer || audioRingBytes <= 0 || !audioFile) return 0;
+  if (xSemaphoreTake(audioMutex, pdMS_TO_TICKS(20)) != pdTRUE) return 0;
+  int moved = 0;
+  if (audioFile) {
+    if (!fileReadDone) {
+      int space = getRingBufferAvailableWrite();
+      // Fill whenever there is room for a useful block.  The old code waited for
+      // 512 bytes of room and then slept 1 ms after every read, which capped the
+      // feed rate for no reason.
+      if (space >= 256) {
+        int want = min(space, (int)sizeof(tempBuf));
+        int got = audioFile.read(tempBuf, want);
+        if (got > 0) {
+          for (int i = 0; i < got; i++) {
+            audioRingBuffer[ringHead] = tempBuf[i];
+            ringHead = (ringHead + 1) % audioRingBytes;
+          }
+          audioStreamPos += got;
+          stBytesFed += got;
+          moved = got;
+        }
+        if (got <= 0 || audioFile.available() == 0) fileReadDone = true;
+      }
+    } else if (getRingBufferAvailableRead() < 16) {
+      trackFinished = true;
+      isPlaying = false;
+      fileReadDone = false;
+    }
+  } else {
+    isPlaying = false;
+  }
+  xSemaphoreGive(audioMutex);
+  stPasses++;
+  return moved;
 }
 
 void audioFeederTask(void* pvParameters) {
-  static uint8_t tempBuf[FEEDER_CHUNK];
+  (void)pvParameters;
   while (true) {
-    bool didWork = false;
-    if (isPlaying && audioRingBuffer) {
-      if (xSemaphoreTake(audioMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-        if (audioFile) {
-          if (!fileReadDone) {
-            int space = getRingBufferAvailableWrite();
-            if (space > 512) {
-              int bytesToRead = min(space, (int)sizeof(tempBuf));
-              int bytesRead = audioFile.read(tempBuf, bytesToRead);
-              if (bytesRead > 0) {
-                for (int i = 0; i < bytesRead; i++) {
-                  audioRingBuffer[ringHead] = tempBuf[i];
-                  ringHead = (ringHead + 1) % RING_BUF_SIZE;
-                }
-                audioStreamPos += bytesRead;
-                didWork = true;
-              }
-              if (bytesRead <= 0 || audioFile.available() == 0) fileReadDone = true;
-            }
-          } else {
-            if (getRingBufferAvailableRead() < 16) {
-              trackFinished = true;
-              isPlaying = false;
-              fileReadDone = false;
-            }
-          }
-        } else {
-          isPlaying = false;
-        }
-        xSemaphoreGive(audioMutex);
-      }
-    }
-    vTaskDelay(pdMS_TO_TICKS(didWork ? 1 : 8));
+    // Keep reading while there is room; only sleep when the ring is full or
+    // there is nothing to play, which is when a delay costs nothing.
+    if (audioFeederStep() > 0) taskYIELD();
+    else vTaskDelay(pdMS_TO_TICKS(1));
   }
 }
 
 int32_t get_audio_data(Frame* channels, int32_t frame_count) {
   int bytesNeeded = frame_count * sizeof(Frame);
   if (!channels || frame_count <= 0) return frame_count;
-  if (!audioSystemReady || !audioRingBuffer) {
+  if (!audioSystemReady || !audioRingBuffer || audioRingBytes <= 0) {
     memset(channels, 0, bytesNeeded);
     return frame_count;
   }
   uint8_t* dest = (uint8_t*)channels;
-  if (isPlaying && getRingBufferAvailableRead() >= bytesNeeded) {
-    for (int i = 0; i < bytesNeeded; i++) {
+  int avail = isPlaying ? getRingBufferAvailableRead() : 0;
+  if (avail > 0) {
+    // Whole frames only: a file that ends mid-frame must not shift the stereo
+    // pairs of everything that follows.
+    int n = min(avail, bytesNeeded) & ~3;
+    for (int i = 0; i < n; i++) {
       dest[i] = audioRingBuffer[ringTail];
-      ringTail = (ringTail + 1) % RING_BUF_SIZE;
+      ringTail = (ringTail + 1) % audioRingBytes;
+    }
+    if (n < bytesNeeded) {
+      // Hand over what is there instead of a whole packet of silence: the link
+      // stays fed and the earbuds cover the shortfall from their own buffer.
+      memset(dest + n, 0, bytesNeeded - n);
+      stSilenceBytes += (uint32_t)(bytesNeeded - n);
+      audioNoteStarve(n, bytesNeeded);
     }
     int g = audioGainQ8;
     if (g != 256) {
@@ -80,6 +166,8 @@ int32_t get_audio_data(Frame* channels, int32_t frame_count) {
     return frame_count;
   }
   memset(channels, 0, bytesNeeded);
+  stSilenceBytes += (uint32_t)bytesNeeded;
+  audioNoteStarve(0, bytesNeeded);
   return frame_count;
 }
 
@@ -178,7 +266,10 @@ void playTrack(int index) {
       audioStreamPos = 0;
       fileReadDone = false;
       isPlaying = true;
+      audioStatsReset();
       xSemaphoreGive(audioMutex);
+      Serial.printf("[I][audio] playing %s (%lu bytes, %lu Hz)\n", playlist[idx].c_str(),
+                    (unsigned long)info.dataSize, (unsigned long)info.sampleRate);
     }
     if (attempts > 0 && currentState == STATE_MUSIC && displayActive()) {
       showToast("Skipped unsupported file");
