@@ -3,7 +3,6 @@
 #include <sys/time.h>
 #include <stdio.h>
 #include <string.h>
-#include <esp_wifi.h>
 #include <time.h>
 #include "Globals.h"
 #include "DisplayUtils.h"
@@ -107,7 +106,7 @@ time_t parseHttpDate(const char* value) {
   return (time_t)(days * 86400L + hh * 3600 + mm * 60 + ss);
 }
 
-static bool syncFromHttpDate() {
+static bool syncFromHttpDate(bool showUI, bool& cancelled) {
   for (int i = 0; i < 3; i++) {
     const char* host = HTTP_TIME_TARGETS[i].connectTo;
     WiFiClient client;
@@ -120,11 +119,15 @@ static bool syncFromHttpDate() {
                   HTTP_TIME_TARGETS[i].hostHeader);
     unsigned long start = millis();
     time_t stamp = 0;
-    while (millis() - start < 5000) {
+    while (millis() - start < 3500) {
       if (!client.connected() && !client.available()) break;
       String line = client.readStringUntil('\n');
       if (line.startsWith("Date:")) {
         stamp = parseHttpDate(line.c_str() + 5);
+        break;
+      }
+      if (showUI && ts.touched()) {   // tapping to skip stops the whole sync
+        cancelled = true;
         break;
       }
     }
@@ -206,8 +209,8 @@ bool syncTimeNTP(bool showUI) {
   }
   Serial.printf("[I][wifi] ip %s rssi %d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
-  // One name lookup per server, logged: if the names do not resolve, the NTP
-  // port is irrelevant, and the address-only passes below are the answer.
+  // One name lookup per server, logged: it tells DNS problems apart from a
+  // network that simply does not answer NTP.
   {
     IPAddress ip;
     const char* names[3] = { NTP_1, NTP_2, NTP_3 };
@@ -217,40 +220,75 @@ bool syncTimeNTP(bool showUI) {
     }
   }
 
-  // Three passes, each with its own configTime(): the Arduino core stops and
-  // restarts SNTP there, so every pass sends a fresh request instead of waiting
-  // on the long retry backoff.  The first pass uses the configured names, the
-  // others plain addresses, which need no DNS at all.
-  const char* passA[3] = { NTP_1, NTP_2, NTP_3 };
-  const char* passB[3] = { NTP_IP_1, NTP_IP_2, NTP_3 };
-  const char* passC[3] = { NTP_IP_2, NTP_IP_1, NTP_3 };
-  const char* const* passes[3] = { passA, passB, passC };
-  const char* labels[3] = { "names", "cloudflare ip", "google ip" };
+  // Some LTE routers answer NTP on the LAN even when the operator blocks it
+  // upstream, so the gateway is worth one short pass of its own.
+  String gateway = WiFi.gatewayIP().toString();
+  if (gateway == "0.0.0.0" || gateway.length() == 0) gateway = "";
 
   timeSynced = false;
   bool cancelled = false;
   int h = 0, m = 0;
-  for (int pass = 0; pass < 3 && !timeSynced && !cancelled; pass++) {
-    configTime(GMT_OFFSET_SEC, DST_OFFSET_SEC, passes[pass][0], passes[pass][1], passes[pass][2]);
-    unsigned long start = millis();
-    while (!timeSynced && millis() - start < 6000) {
-      timeSynced = getClock(h, m);
-      if (showUI && ts.touched()) {
-        cancelled = true;   // tapping to skip must not start the next pass
-        break;
-      }
-      delay(100);
-    }
-    Serial.printf("[I][ntp] pass %d (%s -> %s): %s\n", pass + 1, labels[pass],
-                  passes[pass][0], timeSynced ? "clock set" : "no reply");
-  }
 
-  // Still nothing?  Some networks drop NTP entirely but answer HTTP: take the
-  // clock from a Date header rather than leave the device without a time.
-  if (!timeSynced && !cancelled) {
-    Serial.printf("[I][ntp] no NTP reply, trying the HTTP date\n");
-    syncFromHttpDate();
-    timeSynced = getClock(h, m);
+  // One NTP pass: its own configTime() (the Arduino core stops and restarts
+  // SNTP there, so every pass sends a fresh request instead of waiting on the
+  // retry backoff) and a short window, because a server that is reachable
+  // answers in well under a second.
+  struct NtpPass { const char* label; const char* server; };
+  String namesLabel = String("names -> ") + NTP_1;
+  NtpPass ntpPasses[3] = {
+    { namesLabel.c_str(), NTP_1 },
+    { "router", gateway.length() ? gateway.c_str() : NTP_IP_1 },
+    { "cloudflare ip", NTP_IP_1 },
+  };
+  auto tryNtp = [&]() -> bool {
+    for (int pass = 0; pass < 3 && !timeSynced && !cancelled; pass++) {
+      configTime(GMT_OFFSET_SEC, DST_OFFSET_SEC, ntpPasses[pass].server,
+                 ntpPasses[pass].server == NTP_IP_1 ? NTP_IP_2 : NTP_3, NTP_3);
+      unsigned long start = millis();
+      while (!timeSynced && millis() - start < 4000) {
+        timeSynced = getClock(h, m);
+        if (showUI && ts.touched()) {
+          cancelled = true;   // tapping to skip must not start the next pass
+          break;
+        }
+        delay(100);
+      }
+      Serial.printf("[I][ntp] pass %d (%s -> %s): %s\n", pass + 1, ntpPasses[pass].label,
+                    ntpPasses[pass].server, timeSynced ? "clock set" : "no reply");
+    }
+    return timeSynced;
+  };
+  auto tryHttp = [&]() -> bool {
+    if (timeSynced || cancelled) return timeSynced;
+    Serial.printf("[I][ntp] NTP gave nothing, trying an HTTP Date header\n");
+    return syncFromHttpDate(showUI, cancelled);
+  };
+
+  // Which source worked last time is remembered: on a network that filters NTP
+  // (or HTTP), the next sync starts with the one that works and the clock is set
+  // in a second or two instead of after a string of timeouts.
+  int preferred = prefs.getInt("timesrc", 0);
+  bool viaHttp = false;
+  if (preferred == 1) {
+    viaHttp = tryHttp();
+    if (viaHttp) {
+      timeSynced = true;
+    } else {
+      timeSynced = tryNtp();
+      viaHttp = false;   // remember the source that actually answered
+    }
+  } else {
+    timeSynced = tryNtp();
+    viaHttp = false;
+    if (!timeSynced && !cancelled) {
+      viaHttp = tryHttp();
+      timeSynced = viaHttp;
+    }
+  }
+  if (cancelled) timeSynced = false;
+  if (timeSynced) {
+    prefs.putInt("timesrc", viaHttp ? 1 : 0);
+    Serial.printf("[I][time] synced via %s\n", viaHttp ? "HTTP" : "NTP");
   }
 
   wifiTeardown();

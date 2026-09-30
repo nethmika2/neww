@@ -1429,6 +1429,33 @@ static void testWifiSync() {
   // The first target is reached by IP: no DNS, no UDP 123.
   CHECK(hostHttpRequest().find("Host: one.one.one.one") != std::string::npos);
   CHECK_EQ(hostWifiStopCount(), 0);
+  // The source that worked is remembered, so the next sync does not have to sit
+  // through NTP timeouts again.
+  CHECK_EQ(prefs.getInt("timesrc", -1), 1);
+
+  // With HTTP remembered as the working source it is tried first, and it still
+  // sets the clock.
+  WiFi.hostReset();
+  WiFi.hostAnswerOnBegin(1);
+  hostSetClock(0);
+  timeSynced = false;
+  hostHttpResponse() = "HTTP/1.0 204 No Content\r\nDate: Tue, 29 Sep 2026 12:34:56 GMT\r\n\r\n";
+  CHECK(syncTimeNTP(false));
+  CHECK_EQ((long)time(nullptr), (long)utcEpoch(2026, 9, 29, 12, 34, 56));
+  CHECK(hostHttpConnectCount() >= 1);
+
+  // ...and when HTTP stops working the preference flips back to NTP instead of
+  // pinning a dead source.
+  WiFi.hostReset();
+  WiFi.hostAnswerOnBegin(1);
+  hostSetClock(1780000000);                 // NTP answers this time
+  timeSynced = false;
+  hostHttpConnectOk() = false;
+  CHECK(syncTimeNTP(false));
+  CHECK_EQ(prefs.getInt("timesrc", -1), 0);
+
+  hostHttpConnectOk() = true;
+  prefs.putInt("timesrc", 0);
 
   WiFi.hostReset();
   hostSetMillisStep(0);

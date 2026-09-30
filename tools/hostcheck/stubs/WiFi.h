@@ -50,6 +50,10 @@ inline bool &hostHttpConnectOk() {
   static bool b = true;
   return b;
 }
+inline int &hostHttpConnectCount() {
+  static int n = 0;
+  return n;
+}
 inline bool &hostDnsOk() {
   static bool b = true;
   return b;
@@ -62,6 +66,7 @@ class WiFiClient {
   bool connect(const char *host, uint16_t) {
     host_ = host;
     pos_ = 0;
+    hostHttpConnectCount()++;
     return hostHttpConnectOk();
   }
   void setTimeout(uint32_t) {}
@@ -108,6 +113,7 @@ class WiFiClass {
   void mode(int m) { mode_ = m; modes_++; }
   void setSleep(bool s) { sleep_ = s; }
   IPAddress localIP() { return IPAddress("192.168.8.123"); }
+  IPAddress gatewayIP() { return gateway_; }
   bool hostByName(const char *name, IPAddress &out) {
     (void)name;
     lookups_++;
@@ -145,6 +151,7 @@ class WiFiClass {
     hostHttpResponse().clear();
     hostHttpRequest().clear();
     hostHttpConnectOk() = true;
+    hostHttpConnectCount() = 0;
     hostDnsOk() = true;
     persistent_ = true;
     autoReconnect_ = true;
@@ -152,6 +159,7 @@ class WiFiClass {
   }
 
  private:
+  IPAddress gateway_ = IPAddress("192.168.8.1");
   int begins_ = 0, disconnects_ = 0, modes_ = 0, lookups_ = 0;
   bool persistent_ = true, autoReconnect_ = true;
   void (*eventCb_)(WiFiEvent_t, WiFiEventInfo_t) = nullptr;
