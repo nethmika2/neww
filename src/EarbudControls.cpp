@@ -3,7 +3,6 @@
 #include "DisplayUtils.h"
 #include "AudioApp.h"
 #include "esp_avrc_api.h"
-#include "esp_log.h"
 
 // The library hands passthrough commands to us, but it never answers an AVRCP
 // "register notification" request and it ignores absolute volume commands.
@@ -16,6 +15,10 @@
 // is missing are added by installing our own callback *after* the stack is up
 // and forwarding every event to the library afterwards, which keeps its
 // passthrough handling (and the filter setup that makes taps arrive) intact.
+//
+// The callback itself only records what happened.  Replies are sent from a
+// small task instead, because the callback runs in the Bluetooth task: its
+// stack is a few KB, and the reply APIs must not be called from inside it.
 extern "C" void ccall_app_rc_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param);
 
 static const char *EB_TAG = "buds";
@@ -41,9 +44,14 @@ static uint8_t lastKeyCode = 0;
 static unsigned long lastKeyTime = 0;
 static bool earbudEnabled = true;
 
-// Notification bookkeeping (written in the Bluetooth task, read in the loop).
-static volatile bool notifyVolume = false;
+// Notification bookkeeping.  Set in the Bluetooth task, acted on by the
+// notifier task: volatile flags only, no calls, no printing.
+enum EarbudNotifyBits { EB_NTF_VOLUME_INTERIM = 1, EB_NTF_PLAY_INTERIM = 2 };
+static volatile uint8_t interimWanted = 0;   // a registration is waiting to be answered
+static volatile uint8_t notifyWanted = 0;    // a change is waiting to be reported
+static volatile bool notifyVolume = false;   // the controller holds an open interim
 static volatile bool notifyPlayStatus = false;
+static TaskHandle_t earbudNotifyTaskHandle = nullptr;
 static bool tgCallbackAttached = false;
 static bool loggedConnection = false;
 
@@ -51,6 +59,9 @@ static bool loggedConnection = false;
 static uint8_t reportedPlayState = ESP_AVRC_PLAYBACK_STOPPED;
 static uint8_t lastSentPlayState = 0xFF;
 static int lastSentVolume = -1;
+// Last reply the notifier task sent, for the Settings diagnostics + the log.
+static volatile int lastNotifyError = 0;
+static volatile int lastNotifyEvent = 0;
 
 static volatile int eventCount = 0;
 static char lastEventName[18] = "none";
@@ -84,69 +95,108 @@ static uint8_t volumeToWire(int percent) {
   return (uint8_t)constrain(wire, 0, 0x7F);
 }
 
-// Tells the buds about a change they asked to be notified about.  Only sent for
-// events the controller actually registered, as required by AVRCP.
-static void notifyPlaybackState(uint8_t state) {
-  if (!notifyPlayStatus) return;
+// Sends one notification response.  Called from the notifier task, never from
+// the Bluetooth callback.
+static void sendRnResponse(uint8_t id, esp_avrc_playback_stat_t playState, int percent, esp_avrc_rn_rsp_t rsp) {
   esp_avrc_rn_param_t rn;
-  rn.playback = (esp_avrc_playback_stat_t)state;
-  esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &rn);
-  notifyPlayStatus = false;  // the controller re-registers after a change
-  lastSentPlayState = state;
+  memset(&rn, 0, sizeof(rn));
+  if (id == ESP_AVRC_RN_VOLUME_CHANGE) rn.volume = volumeToWire(percent);
+  else rn.playback = playState;
+  esp_err_t err = esp_avrc_tg_send_rn_rsp((esp_avrc_rn_event_ids_t)id, rsp, &rn);
+  lastNotifyError = (int)err;
+  lastNotifyEvent = id;
 }
 
-static void notifyVolumeChange(int percent) {
-  if (!notifyVolume) return;
-  esp_avrc_rn_param_t rn;
-  rn.volume = volumeToWire(percent);
-  esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &rn);
-  notifyVolume = false;
-  lastSentVolume = percent;
+static uint8_t currentPlayState() {
+  return isPlaying ? ESP_AVRC_PLAYBACK_PLAYING
+                   : (audioFile ? ESP_AVRC_PLAYBACK_PAUSED : ESP_AVRC_PLAYBACK_STOPPED);
+}
+
+// Answers a registration (INTERIM) and, once an interim is outstanding, a change
+// (CHANGED) - the controller re-registers after every change.  Both are sent
+// promptly: the spec gives the target one second (T_mtp) to answer, and a
+// controller that is kept waiting stops sending its buttons.
+// One pass of the notifier: answers a waiting registration and reports a waiting
+// change.  Exposed so the host tests can step it without a real task.
+void earbudNotifyStep() {
+  {
+    uint8_t wanted = interimWanted;
+    if (wanted & EB_NTF_VOLUME_INTERIM) {
+      interimWanted &= (uint8_t)~EB_NTF_VOLUME_INTERIM;
+      notifyVolume = true;
+      sendRnResponse(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_PLAYBACK_STOPPED, currentVolume,
+                     ESP_AVRC_RN_RSP_INTERIM);
+    }
+    if (wanted & EB_NTF_PLAY_INTERIM) {
+      interimWanted &= (uint8_t)~EB_NTF_PLAY_INTERIM;
+      notifyPlayStatus = true;
+      sendRnResponse(ESP_AVRC_RN_PLAY_STATUS_CHANGE, (esp_avrc_playback_stat_t)reportedPlayState, 0,
+                     ESP_AVRC_RN_RSP_INTERIM);
+    }
+    uint8_t change = notifyWanted;
+    if (change & EB_NTF_VOLUME_INTERIM) {
+      notifyWanted &= (uint8_t)~EB_NTF_VOLUME_INTERIM;
+      if (notifyVolume) {
+        sendRnResponse(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_PLAYBACK_STOPPED, currentVolume,
+                       ESP_AVRC_RN_RSP_CHANGED);
+        notifyVolume = false;   // the controller re-registers for the next change
+      }
+      lastSentVolume = currentVolume;
+    }
+    if (change & EB_NTF_PLAY_INTERIM) {
+      notifyWanted &= (uint8_t)~EB_NTF_PLAY_INTERIM;
+      if (notifyPlayStatus) {
+        sendRnResponse(ESP_AVRC_RN_PLAY_STATUS_CHANGE,
+                       (esp_avrc_playback_stat_t)reportedPlayState, 0, ESP_AVRC_RN_RSP_CHANGED);
+        notifyPlayStatus = false;
+      }
+      lastSentPlayState = reportedPlayState;
+    }
+  }
+}
+
+static void earbudNotifyTask(void*) {
+  while (true) {
+    earbudNotifyStep();
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
 }
 
 // ==========================================
 // AVRCP TARGET CALLBACK (Bluetooth task context)
 // ==========================================
 static void earbudTgCallback(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param) {
+  // Bluetooth task context: only record what happened here.  Everything that
+  // talks to the stack (the notification replies, the volume reply) is done by
+  // the notifier task and the main loop, and nothing is printed.
   switch (event) {
     case ESP_AVRC_TG_CONNECTION_STATE_EVT:
       loggedConnection = param->conn_stat.connected;
-      ESP_LOGI(EB_TAG, "AVRCP %s", param->conn_stat.connected ? "connected" : "disconnected");
       if (!param->conn_stat.connected) {
         notifyVolume = false;
         notifyPlayStatus = false;
+        interimWanted = 0;
+        notifyWanted = 0;
       }
       break;
 
     case ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT: {
       uint8_t id = param->reg_ntf.event_id;
-      esp_avrc_rn_param_t rn;
-      memset(&rn, 0, sizeof(rn));
-      if (id == ESP_AVRC_RN_VOLUME_CHANGE) {
-        notifyVolume = true;
-        rn.volume = volumeToWire(currentVolume);
-      } else if (id == ESP_AVRC_RN_PLAY_STATUS_CHANGE) {
-        notifyPlayStatus = true;
-        rn.playback = (esp_avrc_playback_stat_t)reportedPlayState;
-      }
-      // The interim response has to arrive quickly (T_mtp, 1 s); without it the
-      // controller marks the target as unresponsive and the touch controls stop
-      // working even though the audio link is fine.
-      esp_err_t err = esp_avrc_tg_send_rn_rsp((esp_avrc_rn_event_ids_t)id, ESP_AVRC_RN_RSP_INTERIM, &rn);
-      ESP_LOGI(EB_TAG, "register notify %d -> %s", id, err == ESP_OK ? "interim sent" : "send failed");
+      if (id == ESP_AVRC_RN_VOLUME_CHANGE) interimWanted |= EB_NTF_VOLUME_INTERIM;
+      else if (id == ESP_AVRC_RN_PLAY_STATUS_CHANGE) interimWanted |= EB_NTF_PLAY_INTERIM;
       break;
     }
 
     case ESP_AVRC_TG_SET_ABSOLUTE_VOLUME_CMD_EVT:
-      // Volume taps from the buds arrive here on absolute-volume devices.
-      ESP_LOGI(EB_TAG, "absolute volume %d", param->set_abs_vol.volume);
+      // Volume taps from the buds arrive here on absolute-volume devices; the
+      // library ignores them, so the new level is queued for the main loop.
       earbudAbsoluteVolumeHandler(param->set_abs_vol.volume);
       break;
 
     case ESP_AVRC_TG_PASSTHROUGH_CMD_EVT:
-      // The library answers this one, but it is logged here as well so a
-      // capture of the serial output shows exactly which buttons the buds send.
-      ESP_LOGI(EB_TAG, "key 0x%02x state %d", param->psth_cmd.key_code, param->psth_cmd.key_state);
+      // Handled by the library through the forward below; recorded here so the
+      // Settings counter and the log can show which buttons the buds send.
+      recordEvent(param->psth_cmd.key_state == 0 ? "KEY DOWN" : "KEY UP");
       break;
 
     default:
@@ -161,7 +211,7 @@ static void earbudControlsAttachTarget() {
   if (tgCallbackAttached) return;
   if (esp_avrc_tg_register_callback(earbudTgCallback) == ESP_OK) {
     tgCallbackAttached = true;
-    ESP_LOGI(EB_TAG, "AVRCP target notifications enabled");
+    Serial.printf("[I][buds] AVRCP target notifications enabled\n");
   }
 }
 
@@ -243,7 +293,15 @@ void earbudControlsPrepare() {
   // Advertise the notifications the buds rely on.  The library pushes this list
   // into the AVRCP target during start().
   a2dp_source.set_avrc_rn_events({ ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_PLAY_STATUS_CHANGE });
+  // Replies go out from here, not from the Bluetooth callback: the callback's
+  // task has a few KB of stack and is not the place to call stack APIs from.
+  if (!earbudNotifyTaskHandle) {
+    xTaskCreatePinnedToCore(earbudNotifyTask, "BudsNotify", 2048, NULL, 3, &earbudNotifyTaskHandle, 1);
+  }
 }
+
+int earbudNotifyLastError() { return lastNotifyError; }
+int earbudNotifyLastEvent() { return lastNotifyEvent; }
 
 // ==========================================
 // MAIN LOOP HANDLING
@@ -251,20 +309,29 @@ void earbudControlsPrepare() {
 void earbudControlsPoll() {
   // The stack has finished coming up by the time a device is connected, so this
   // is the safe moment to take over the target callback without racing the
-  // library's own registration.
-  if (btInitialized && a2dp_source.is_connected()) earbudControlsAttachTarget();
+  // library's own registration.  With the feature switched off the library's own
+  // callback is left in place, which is the stock behaviour if anything here is
+  // ever suspected of misbehaving.
+  if (earbudEnabled && btInitialized && a2dp_source.is_connected()) earbudControlsAttachTarget();
+
+  // Tell the notifier task what the buds should hear about, then get on with the
+  // button handling; the task does the actual replies.
+  uint8_t stateNow = currentPlayState();
+  if (stateNow != reportedPlayState) reportedPlayState = stateNow;
+  if (reportedPlayState != lastSentPlayState) notifyWanted |= EB_NTF_PLAY_INTERIM;
+  if (currentVolume != lastSentVolume) notifyWanted |= EB_NTF_VOLUME_INTERIM;
+
+  // One line per new event, from the loop rather than from the Bluetooth task.
+  static int loggedEvents = -1;
+  static unsigned long lastEventLog = 0;
+  if (eventCount != loggedEvents && millis() - lastEventLog >= 1000) {
+    loggedEvents = eventCount;
+    lastEventLog = millis();
+    Serial.printf("[I][buds] %s (event %d)\n", lastEventName, eventCount);
+  }
 
   uint8_t pending = earbudPending;
-  if (!pending) {
-    // Even without a fresh button press there can be a state change to report.
-    uint8_t state = isPlaying ? ESP_AVRC_PLAYBACK_PLAYING : (audioFile ? ESP_AVRC_PLAYBACK_PAUSED : ESP_AVRC_PLAYBACK_STOPPED);
-    if (state != reportedPlayState) {
-      reportedPlayState = state;
-      if (state != lastSentPlayState) notifyPlaybackState(state);
-    }
-    if (currentVolume != lastSentVolume) notifyVolumeChange(currentVolume);
-    return;
-  }
+  if (!pending) return;
   earbudPending = 0;
   if (!earbudEnabled || !btInitialized) return;
 
@@ -324,12 +391,10 @@ void earbudControlsPoll() {
 
   // Report the new state back to the buds so their own display/announcements
   // stay in step with what the player is doing.
-  uint8_t state = isPlaying ? ESP_AVRC_PLAYBACK_PLAYING : (audioFile ? ESP_AVRC_PLAYBACK_PAUSED : ESP_AVRC_PLAYBACK_STOPPED);
-  if (state != reportedPlayState) {
-    reportedPlayState = state;
-    if (state != lastSentPlayState) notifyPlaybackState(state);
-  }
-  if (currentVolume != lastSentVolume) notifyVolumeChange(currentVolume);
+  stateNow = currentPlayState();
+  if (stateNow != reportedPlayState) reportedPlayState = stateNow;
+  if (reportedPlayState != lastSentPlayState) notifyWanted |= EB_NTF_PLAY_INTERIM;
+  if (currentVolume != lastSentVolume) notifyWanted |= EB_NTF_VOLUME_INTERIM;
 
   if (msg.length() == 0) return;
 

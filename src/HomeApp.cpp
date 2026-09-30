@@ -104,30 +104,40 @@ void handleHomeTouch(bool touched, int sx, int sy) {
         return;
       }
       if (!audioRingBuffer) {
-        // Biggest ring the heap can spare: more slack between the SD reader and
-        // the Bluetooth stream means fewer dropouts on a slow card.
-        const int ringSizes[3] = { RING_BUF_SIZE, RING_BUF_SIZE_ALT, RING_BUF_SIZE_MIN };
-        for (int i = 0; i < 3 && !audioRingBuffer; i++) {
-          audioRingBuffer = (uint8_t*)malloc(ringSizes[i]);
-          if (audioRingBuffer) {
-            memset(audioRingBuffer, 0, ringSizes[i]);
-            audioRingBytes = ringSizes[i];
-            Serial.printf("[I][music] ring buffer %d bytes\n", ringSizes[i]);
-          }
-        }
-        if (!audioRingBuffer) {
-          printCentered("Out of memory!", 160, 130, &FreeSans9pt7b, DEL_COLOR);
+        // Biggest ring that still leaves the Bluetooth stack its floor: the
+        // stack allocates its queues and stream buffers when playback starts,
+        // and a ring that ate into that margin is how "playing X" turns into an
+        // assert a moment later.
+        if (!allocAudioRing()) {
+          printCentered("Not enough memory", 160, 130, &FreeSans9pt7b, DEL_COLOR);
+          printCentered("Close other apps and try again", 160, 148, &FreeSans9pt7b, MUTED_COLOR);
           delay(2000);
           drawHomeScreen();
           return;
         }
       }
       if (!audioTaskHandle) {
-        // Priority above the UI loop and pinned to the core the Bluetooth stack
-        // does not own, so a screen repaint cannot delay an SD read.
-        xTaskCreatePinnedToCore(audioFeederTask, "AudioFeeder", 4096, NULL, 6, &audioTaskHandle, 0);
+        // The old core/priority pair: above the UI loop so a repaint cannot
+        // delay an SD read, on the core the main loop runs on so the Bluetooth
+        // stack keeps its own core to itself.
+        xTaskCreatePinnedToCore(audioFeederTask, "AudioFeeder", 4096, NULL, 2, &audioTaskHandle, 1);
         delay(150);
-        Serial.printf("[I][music] feeder task on core 0 (prio 6)\n");
+        Serial.printf("[I][music] feeder task on core 1 (prio 2)\n");
+      }
+      // Load and pre-fill *before* the stack is asked to connect: the first
+      // packets then carry music instead of the silence the buds would otherwise
+      // hear while the card is still being opened.
+      loadPlaylist();
+      if (numTracks > 0 && !audioFile) {
+        playTrack(currentTrack);
+        isPlaying = false;
+      }
+      {
+        unsigned long t0 = millis();
+        int prefill = min(audioRingBytes / 2, (int)(44100 * 4 / 2));   // up to ~0.5 s
+        while (getRingBufferAvailableRead() < prefill && millis() - t0 < 600) delay(5);
+        Serial.printf("[I][music] pre-buffered %d bytes of %d\n",
+                      getRingBufferAvailableRead(), audioRingBytes);
       }
       printCentered("Starting Bluetooth...", 160, 130, &FreeSans9pt7b, MUTED_COLOR);
       audioSystemReady = true;
@@ -138,11 +148,9 @@ void handleHomeTouch(bool touched, int sx, int sy) {
       applyVolume();
       btInitialized = true;
     }
-    loadPlaylist();
-    if (numTracks > 0 && !audioFile) {
-      playTrack(currentTrack);
-      isPlaying = false;
-    }
+    // The feeder keeps reading while the connect happens; a track that ends
+    // before the buds arrive is restarted by the advance in the main loop.
+    if (numTracks > 0 && !audioFile) playTrack(currentTrack);
     currentState = STATE_MUSIC;
     drawMusicScreen(true);
   } else if (inRect(sx, sy, HOME_CARD_X[2], HOME_CARD_Y, HOME_CARD_W, HOME_CARD_H)) {

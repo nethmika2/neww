@@ -57,6 +57,13 @@ static void wifiTeardown() {
   delay(50);
 }
 
+// Why an association failed is the one thing the status code does not say.
+static void wifiEventLog(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    Serial.printf("[I][wifi] disconnected, reason %u\n", (unsigned)info.wifi_sta_disconnected.reason);
+  }
+}
+
 // ==========================================
 // TIME OVER HTTP (LAST RESORT)
 // ==========================================
@@ -146,6 +153,18 @@ bool syncTimeNTP(bool showUI) {
     printCentered(WIFI_SSID, 160, 118, &FreeSans9pt7b, MUTED_COLOR);
     printCentered("Tap screen to skip", 160, 205, &FreeSans9pt7b, MUTED_COLOR);
   }
+  // The access point settings are written to flash by default: a power cut while
+  // that write is in flight leaves the driver with a half-written profile, which
+  // is one of the ways "it connected yesterday" turns into "no answer" today.
+  // This firmware always passes the credentials explicitly, so nothing is lost.
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(false);
+  // A fresh handler per sync call would pile up in the driver's callback list.
+  static bool wifiEventsHooked = false;
+  if (!wifiEventsHooked) {
+    WiFi.onEvent(wifiEventLog);
+    wifiEventsHooked = true;
+  }
   WiFi.mode(WIFI_STA);
   // Modem sleep adds hundreds of milliseconds to the association and can make
   // the name lookup and the NTP round trip time out on a slow access point.
@@ -168,8 +187,8 @@ bool syncTimeNTP(bool showUI) {
       delay(100);
     }
     associated = (WiFi.status() == WL_CONNECTED);
-    Serial.printf("[I][wifi] attempt %d: %s after %lu ms\n", attempt,
-                  associated ? "connected" : "no answer", millis() - start);
+    Serial.printf("[I][wifi] attempt %d: %s after %lu ms (status %d)\n", attempt,
+                  associated ? "connected" : "no answer", millis() - start, (int)WiFi.status());
     if (!associated) {
       WiFi.disconnect(true);
       delay(200);

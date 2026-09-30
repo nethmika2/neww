@@ -6,6 +6,16 @@
 #include <cstdarg>
 #include <cstdio>
 typedef enum { WL_IDLE_STATUS = 0, WL_NO_SSID_AVAIL = 1, WL_CONNECTED = 3, WL_CONNECT_FAILED = 4, WL_DISCONNECTED = 6 } wl_status_t;
+
+// Enough of the event API for the disconnect reason the firmware logs.
+typedef enum { ARDUINO_EVENT_WIFI_READY = 0, ARDUINO_EVENT_WIFI_STA_DISCONNECTED = 5 } arduino_event_id_t;
+typedef arduino_event_id_t WiFiEvent_t;
+struct wifi_event_sta_disconnected_t_stub {
+  uint8_t reason;
+};
+union WiFiEventInfo_t {
+  wifi_event_sta_disconnected_t_stub wifi_sta_disconnected;
+};
 #define WIFI_OFF 0
 #define WIFI_STA 1
 #define WIFI_AP 2
@@ -107,7 +117,18 @@ class WiFiClass {
   }
   int RSSI() { return -60; }
   void hostname(const char *) {}
-  void persistent(bool) {}
+  void persistent(bool p) { persistent_ = p; }
+  void setAutoReconnect(bool a) { autoReconnect_ = a; }
+  void onEvent(void (*cb)(WiFiEvent_t, WiFiEventInfo_t), int = -1) { eventCb_ = cb; }
+  bool hostPersistent() const { return persistent_; }
+  bool hostAutoReconnect() const { return autoReconnect_; }
+  // Fires the registered handler as the driver would on a failed association.
+  void hostFireDisconnect(uint8_t reason) {
+    if (!eventCb_) return;
+    WiFiEventInfo_t info;
+    info.wifi_sta_disconnected.reason = reason;
+    eventCb_(ARDUINO_EVENT_WIFI_STA_DISCONNECTED, info);
+  }
 
   void hostAnswerOnBegin(int n) { answerOnBegin_ = n; begins_ = 0; connected_ = false; }
   int hostLookups() const { return lookups_; }
@@ -125,10 +146,15 @@ class WiFiClass {
     hostHttpRequest().clear();
     hostHttpConnectOk() = true;
     hostDnsOk() = true;
+    persistent_ = true;
+    autoReconnect_ = true;
+    eventCb_ = nullptr;
   }
 
  private:
   int begins_ = 0, disconnects_ = 0, modes_ = 0, lookups_ = 0;
+  bool persistent_ = true, autoReconnect_ = true;
+  void (*eventCb_)(WiFiEvent_t, WiFiEventInfo_t) = nullptr;
   int answerOnBegin_ = 0;
   bool connected_ = false, sleep_ = true;
   int mode_ = WIFI_OFF;

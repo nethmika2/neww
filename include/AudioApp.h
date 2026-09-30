@@ -7,6 +7,7 @@
 // Audio ring buffer & background task
 int getRingBufferAvailableWrite();
 int getRingBufferAvailableRead();
+int allocAudioRing();          // picks the ring size, 0 when none fits
 void audioFeederTask(void* pvParameters);
 int32_t get_audio_data(Frame* channels, int32_t frame_count);
 

@@ -62,7 +62,7 @@
 
 // Wi-Fi & NTP Configuration
 // Printed on every boot so a serial log says which build is on the device.
-static const char* const FW_BUILD = "2026-09-29b (wifi teardown + ntp/http time)";
+static const char* const FW_BUILD = "2026-09-30a (music/bt hardened, wifi+http time)";
 
 static const char* const WIFI_SSID = "Dialog 4G New";
 static const char* const WIFI_PASS = "tgrd-0241320-";

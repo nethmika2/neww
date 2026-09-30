@@ -27,6 +27,7 @@ void earbudAbsoluteVolumeHandler(uint8_t wireVolume);
 // Registers the passthrough handler.  Must be called before a2dp_source.start()
 // because the library only initialises the AVRCP target when a handler exists.
 void earbudControlsPrepare();
+void earbudNotifyStep();       // one pass of the notification replier (tests)
 void earbudControlsPoll();
 
 bool earbudControlsEnabled();
@@ -35,4 +36,6 @@ void earbudControlsSetEnabled(bool on);
 // Diagnostics for the Settings screen: how many AVRCP commands the buds have
 // sent since boot, and a short name for the last one.
 int earbudEventCount();
+int earbudNotifyLastError();   // last esp_err_t from a notification reply
+int earbudNotifyLastEvent();   // event id that reply was for
 String earbudLastEvent();

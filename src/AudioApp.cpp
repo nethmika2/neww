@@ -31,7 +31,8 @@ static volatile uint32_t stBytesFed = 0;
 static volatile uint32_t stStarve = 0;
 static volatile uint32_t stSilenceBytes = 0;
 static volatile uint32_t stPasses = 0;
-static unsigned long stLastStarveLog = 0;
+static volatile int stLastStarveFree = 0;   // last shortfall, read by the loop
+static volatile int stLastStarveNeed = 0;
 static unsigned long stLastLog = 0;
 static uint32_t stLastLogBytes = 0;
 
@@ -49,15 +50,14 @@ void audioStatsReset() {
   stLastLog = millis();
 }
 
-// A starvation is worth a line, but a long gap would print one per packet, so
-// it is rate limited to one per second.
+// Records a shortfall for the main loop's telemetry line.
 static void audioNoteStarve(int have, int need) {
+  // NOTE: this runs in the Bluetooth task (the A2DP data callback).  That task
+  // has a few KB of stack and Serial.printf needs the better part of one, so
+  // nothing is printed from here - the main loop reports the counters instead.
   stStarve++;
-  unsigned long now = millis();
-  if (now - stLastStarveLog < 1000) return;
-  stLastStarveLog = now;
-  Serial.printf("[I][audio] starved: %d of %d bytes in the ring (total %u)\n",
-                have, need, (unsigned)stStarve);
+  stLastStarveFree = have;
+  stLastStarveNeed = need;
 }
 
 void audioLogStats(const char* why) {
@@ -68,9 +68,10 @@ void audioLogStats(const char* why) {
   uint32_t kBps = (uint32_t)(((uint64_t)(fed - stLastLogBytes) * 1000ULL) / (dt * 1024ULL));
   int fill = 0;
   if (audioRingBuffer && audioRingBytes > 0) fill = (getRingBufferAvailableRead() * 100) / audioRingBytes;
-  Serial.printf("[I][audio] %s: fed %lu KB (%lu KB/s), ring %d%%, starve %lu (%lu ms silence), feeder %lu/s, playing %d\n",
+  Serial.printf("[I][audio] %s: fed %lu KB (%lu KB/s), ring %d%%, starve %lu (worst %d of %d B, %lu ms silence), feeder %lu/s, playing %d\n",
                 why, (unsigned long)(fed / 1024), (unsigned long)kBps, fill,
-                (unsigned long)stStarve, (unsigned long)(stSilenceBytes / 176), (unsigned long)stPasses, isPlaying ? 1 : 0);
+                (unsigned long)stStarve, stLastStarveFree, stLastStarveNeed,
+                (unsigned long)(stSilenceBytes / 176), (unsigned long)stPasses, isPlaying ? 1 : 0);
   stLastLog = now;
   stLastLogBytes = fed;
 }
@@ -236,6 +237,34 @@ void loadPlaylist() {
   if (numTracks == 0) currentTrack = 0;
   else currentTrack = constrain(currentTrack, 0, numTracks - 1);
   xSemaphoreGive(audioMutex);
+}
+
+// ==========================================
+// RING BUFFER ALLOCATION
+// ==========================================
+// Picks the biggest ring that still leaves the Bluetooth stack its floor: the
+// stack allocates its own queues and buffers when streaming starts, and a ring
+// that ate into that margin is how "playing X" turns into an assert.  Steps a
+// size down rather than fail, and returns the size that was taken (0 = none).
+int allocAudioRing() {
+  const int sizes[3] = { RING_BUF_SIZE, RING_BUF_SIZE_ALT, RING_BUF_SIZE_MIN };
+  uint32_t heap = (uint32_t)ESP.getFreeHeap();
+  for (int i = 0; i < 3; i++) {
+    if (heap < (uint32_t)sizes[i] + (uint32_t)BT_MIN_HEAP) {
+      Serial.printf("[I][music] ring %d leaves %u of %u needed for Bluetooth\n",
+                    sizes[i], (unsigned)(heap - sizes[i]), (unsigned)BT_MIN_HEAP);
+      continue;
+    }
+    uint8_t *buf = (uint8_t *)malloc(sizes[i]);
+    if (!buf) continue;
+    memset(buf, 0, sizes[i]);
+    audioRingBuffer = buf;
+    audioRingBytes = sizes[i];
+    Serial.printf("[I][music] ring buffer %d bytes (%u free for Bluetooth)\n",
+                  sizes[i], (unsigned)ESP.getFreeHeap());
+    return sizes[i];
+  }
+  return 0;
 }
 
 void playTrack(int index) {

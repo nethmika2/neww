@@ -514,12 +514,21 @@ static void testEarbuds() {
   memset(&p, 0, sizeof(p));
   p.reg_ntf.event_id = ESP_AVRC_RN_VOLUME_CHANGE;
   hostAvrc.deliver(ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT, &p);
+  // The Bluetooth callback only records the registration: replying from inside
+  // it would call stack APIs from the Bluetooth task.  The reply is sent by the
+  // notifier instead.
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_INTERIM), 0);
+  earbudNotifyStep();
   CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_INTERIM), 1);
   CHECK_EQ(a2dp_source.lastTgEvent, (int)ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT);
 
   memset(&p, 0, sizeof(p));
   p.reg_ntf.event_id = ESP_AVRC_RN_PLAY_STATUS_CHANGE;
   hostAvrc.deliver(ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT, &p);
+  earbudNotifyStep();
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_INTERIM), 1);
+  // A registration is answered once, not every time the notifier runs.
+  earbudNotifyStep();
   CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_INTERIM), 1);
 
   // A play/pause tap is acted on once, releases are ignored.
@@ -531,6 +540,11 @@ static void testEarbuds() {
   CHECK(earbudEventCount() > 0);
 
   // The buds are told about the state change they asked for.
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED), 0);
+  earbudNotifyStep();
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED), 1);
+  // ...and not twice: the interim is consumed until the buds register again.
+  earbudNotifyStep();
   CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED), 1);
 
   // Next / previous move through the playlist.
@@ -600,6 +614,7 @@ static void testEarbuds() {
   hostAvrc.reset();
   earbudPassthruHandler(ESP_AVRC_PT_CMD_PAUSE, false);
   earbudControlsPoll();
+  earbudNotifyStep();
   CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED), 0);
 }
 
@@ -1280,6 +1295,48 @@ static time_t utcEpoch(int y, int mo, int d, int h, int mi, int s) {
 // ===========================================================================
 // HTTP Date parsing (the last resort time source)
 // ===========================================================================
+// ===========================================================================
+// Ring buffer sizing (what the music app allocates before Bluetooth starts)
+// ===========================================================================
+static void testRingSizing() {
+  SUITE("ring sizing");
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Ample heap: the preferred size.
+  hostSetFreeHeap(BT_MIN_HEAP + 40000);
+  CHECK_EQ(allocAudioRing(), RING_BUF_SIZE);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
+  CHECK(audioRingBuffer != nullptr);
+  for (int i = 0; i < 64; i++) CHECK_EQ(audioRingBuffer[i], 0);   // zeroed
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Enough for the middle size but not the preferred one: step down instead of
+  // eating the margin the Bluetooth stack allocates its own queues from.
+  hostSetFreeHeap(BT_MIN_HEAP + 20000);
+  CHECK_EQ(allocAudioRing(), RING_BUF_SIZE_ALT);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE_ALT);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Only the smallest ring still leaves the stack its floor.
+  hostSetFreeHeap(BT_MIN_HEAP + 9000);
+  CHECK_EQ(allocAudioRing(), RING_BUF_SIZE_MIN);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Nothing fits: report it instead of starting Bluetooth into a heap that
+  // cannot hold its queues.
+  hostSetFreeHeap(BT_MIN_HEAP + 1000);
+  CHECK_EQ(allocAudioRing(), 0);
+  CHECK(audioRingBuffer == nullptr);
+  hostSetFreeHeap(200000);
+}
+
 static void testHttpDate() {
   SUITE("http date");
   // A Date header is GMT, so it must agree with the C library's own UTC
@@ -1592,6 +1649,7 @@ int main() {
   testGraphZoom();
   testAudio();
   testHttpDate();
+  testRingSizing();
   testWifiSync();
   testPomodoroDates();
   testPersistence();
