@@ -67,11 +67,15 @@ static void wifiEventLog(WiFiEvent_t event, WiFiEventInfo_t info) {
 // ==========================================
 // TIME OVER HTTP (LAST RESORT)
 // ==========================================
-// A Date header is good to the second, needs no lookup beyond the host name and
-// works on networks that block NTP.  Two hosts are tried: the first is a tiny
-// connectivity check page, the second a very large name that is unlikely to be
-// blocked.
-static const char* const HTTP_TIME_HOSTS[2] = { "connectivitycheck.gstatic.com", "www.google.com" };
+// A Date header is good to the second and works on networks that block NTP.  The
+// first target is reached by IP address, so it needs neither DNS nor UDP: it
+// covers the network where name resolution is what fails.
+struct HttpTimeTarget { const char* connectTo; const char* hostHeader; };
+static const HttpTimeTarget HTTP_TIME_TARGETS[3] = {
+  { "1.1.1.1", "one.one.one.one" },                                          // no DNS at all
+  { "connectivitycheck.gstatic.com", "connectivitycheck.gstatic.com" },
+  { "www.google.com", "www.google.com" },
+};
 
 time_t parseHttpDate(const char* value) {
   static const char* const mon[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -104,15 +108,16 @@ time_t parseHttpDate(const char* value) {
 }
 
 static bool syncFromHttpDate() {
-  for (int i = 0; i < 2; i++) {
-    const char* host = HTTP_TIME_HOSTS[i];
+  for (int i = 0; i < 3; i++) {
+    const char* host = HTTP_TIME_TARGETS[i].connectTo;
     WiFiClient client;
     client.setTimeout(3000);
     if (!client.connect(host, 80)) {
       Serial.printf("[I][ntp] http %s: no connection\n", host);
       continue;
     }
-    client.printf("GET / HTTP/1.0\r\nHost: %s\r\nUser-Agent: cyd-os\r\nConnection: close\r\n\r\n", host);
+    client.printf("GET / HTTP/1.0\r\nHost: %s\r\nUser-Agent: cyd-os\r\nConnection: close\r\n\r\n",
+                  HTTP_TIME_TARGETS[i].hostHeader);
     unsigned long start = millis();
     time_t stamp = 0;
     while (millis() - start < 5000) {

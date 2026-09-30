@@ -1426,7 +1426,8 @@ static void testWifiSync() {
   CHECK_EQ((long)time(nullptr), (long)utcEpoch(2026, 9, 29, 12, 34, 56));
   CHECK_EQ(WiFi.hostLookups(), 3);                 // one name lookup per server
   CHECK(hostHttpRequest().find("GET /") == 0);
-  CHECK(hostHttpRequest().find("Host: connectivitycheck.gstatic.com") != std::string::npos);
+  // The first target is reached by IP: no DNS, no UDP 123.
+  CHECK(hostHttpRequest().find("Host: one.one.one.one") != std::string::npos);
   CHECK_EQ(hostWifiStopCount(), 0);
 
   WiFi.hostReset();
