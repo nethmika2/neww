@@ -246,6 +246,36 @@ void loadPlaylist() {
 // stack allocates its own queues and buffers when streaming starts, and a ring
 // that ate into that margin is how "playing X" turns into an assert.  Steps a
 // size down rather than fail, and returns the size that was taken (0 = none).
+// Handles a crash that was traced, on hardware, to the moment the earbuds
+// connect: the stack allocates its AVRCP/L2CAP/SDP blocks then, one of the fixed
+// queues could not get its semaphore, and the IDF cleanup path for that failure
+// calls vSemaphoreDelete(NULL) - an assert and a reboot.  The allocation that
+// fails is only ~100 bytes, so the heap has to be nearly gone at that instant.
+//
+// The ring is therefore NOT held while a connection is being set up.  It is
+// taken back once the setup has settled (or the stream has started), which hands
+// the stack the whole heap for the one moment it needs it.  Music before that
+// point is silence from get_audio_data(), which is harmless: nothing is pulling
+// audio until the stream is up.
+void audioRingService() {
+  static bool sawConnected = false;
+  static unsigned long connectedAt = 0;
+  if (audioRingBuffer || !audioSystemReady || !btInitialized) return;
+  if (!a2dp_source.is_connected()) return;
+  if (!sawConnected) {
+    sawConnected = true;
+    connectedAt = millis();
+    Serial.printf("[I][buds] connected, free heap %u min %u\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
+  }
+  bool streaming = a2dp_source.get_audio_state() == ESP_A2D_AUDIO_STATE_STARTED;
+  if (!streaming && millis() - connectedAt < 2500) return;   // let the setup finish
+  if (allocAudioRing() > 0) {
+    Serial.printf("[I][music] ring ready, free heap %u min %u\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
+  }
+}
+
 int allocAudioRing() {
   const int sizes[3] = { RING_BUF_SIZE, RING_BUF_SIZE_ALT, RING_BUF_SIZE_MIN };
   uint32_t heap = (uint32_t)ESP.getFreeHeap();

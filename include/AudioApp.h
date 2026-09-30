@@ -8,6 +8,7 @@
 int getRingBufferAvailableWrite();
 int getRingBufferAvailableRead();
 int allocAudioRing();          // picks the ring size, 0 when none fits
+void audioRingService();       // allocates the ring once a connection has settled
 void audioFeederTask(void* pvParameters);
 int32_t get_audio_data(Frame* channels, int32_t frame_count);
 

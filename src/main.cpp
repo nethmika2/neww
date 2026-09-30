@@ -116,6 +116,7 @@ void setup() {
 // ==========================================
 void loop() {
   if (btInitialized) btConnected = a2dp_source.is_connected();
+  audioRingService();
   // Earbud buttons are queued from the Bluetooth task and applied here.
   earbudControlsPoll();
 

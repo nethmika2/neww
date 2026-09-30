@@ -1298,6 +1298,168 @@ static time_t utcEpoch(int y, int mo, int d, int h, int mi, int s) {
 // ===========================================================================
 // Ring buffer sizing (what the music app allocates before Bluetooth starts)
 // ===========================================================================
+// ===========================================================================
+// Lazy ring allocation - the fix for the traced crash
+// ===========================================================================
+// The hardware backtrace showed the reboots come from a failed ~100 byte
+// semaphore allocation inside the Bluetooth stack while the earbuds connect, so
+// the ring must not be held during that window.  These checks pin the ordering:
+// nothing is allocated while disconnected, nothing during the settling period,
+// and the ring lands once the connection has settled.
+// ===========================================================================
+// Music start ordering (the two fixes for the traced crash)
+// ===========================================================================
+// The hardware backtrace ended in a failed allocation inside the Bluetooth
+// stack while the earbuds connected, with the AVRCP service discovery running.
+// Two things must therefore hold at the moment the music app starts the stack:
+// the AVRCP passthrough handler is registered first (otherwise the library never
+// brings up the target the buttons need), and no ring buffer is held yet (the
+// connection setup gets the whole heap).
+static void testMusicStart() {
+  SUITE("music start");
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  bool wasBt = btInitialized;
+  btInitialized = false;
+  audioSystemReady = false;
+  a2dp_source.set_connected(false);
+  hostSetMillis(0);
+  hostSetMillisStep(250);   // the touch handler waits for a release
+  hostSetFreeHeap(BT_MIN_HEAP + 40000);
+
+  SD.reset();
+  hostMakeWav("/live.wav", 1);
+  sdReady = true;
+  numTracks = 1;
+  playlist[0] = "live.wav";
+  currentTrack = 0;
+  a2dp_source.startCount = 0;
+  a2dp_source.startAfterPassthru = false;
+  a2dp_source.hostResetPassthru();          // as if the stack had never started
+  earbudControlsPrepareResetForTest();
+  prefs.putBool("earbud", true);
+
+  currentState = STATE_HOME;
+  // Tap the music tile (home cards are at x 12/116/220, y 58, 96x112).
+  hostInjectTouch(true, 1600, 1300);
+  handleHomeTouch(true, 116 + 20, 58 + 20);
+  hostInjectTouch(false, 0, 0);
+
+  CHECK_EQ(a2dp_source.startCount, 1);
+  CHECK(btInitialized);
+  // The passthrough handler was in place before the stack came up, so the
+  // library initialises its AVRCP target.
+  CHECK(a2dp_source.startAfterPassthru);
+  CHECK(a2dp_source.is_passthru_active());
+  // ...and the ring is left unallocated for the connection window.
+  CHECK(audioRingBuffer == nullptr);
+  CHECK_EQ(currentState, STATE_MUSIC);
+
+  // Connect + settle: now the ring is taken back, and only then.
+  a2dp_source.set_connected(true);
+  hostSetMillisStep(0);
+  hostSetMillis(2000);
+  audioRingService();
+  CHECK(audioRingBuffer == nullptr);   // inside the settling window
+  hostSetMillis(6000);                 // 4 s after the connection was first seen
+  audioRingService();
+  CHECK(audioRingBuffer != nullptr);
+
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // With earbud buttons switched off the AVRCP target is not brought up at all:
+  // no passthrough handler (which is what makes the library initialise it), so
+  // the stock library path runs and no memory is spent on the target.
+  a2dp_source.hostResetPassthru();
+  earbudControlsPrepareResetForTest();
+  prefs.putBool("earbud", false);
+  earbudControlsPrepare();
+  CHECK(a2dp_source.passthruCallback() == nullptr);
+  CHECK(!a2dp_source.is_passthru_active());
+  CHECK_EQ(a2dp_source.rnEventsRef().size(), (size_t)0);
+  btInitialized = true;
+  a2dp_source.set_connected(true);
+  hostAvrc.reset();
+  hostAvrc.registered = nullptr;
+  earbudControlsPoll();
+  CHECK(hostAvrc.registered == nullptr);   // the library keeps its own target
+
+  prefs.putBool("earbud", true);
+  earbudControlsSetEnabled(true);
+  btInitialized = wasBt;
+  hostSetFreeHeap(200000);
+}
+
+static void testLazyRing() {
+  SUITE("lazy ring");
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  bool wasReady = audioSystemReady;
+  bool wasBt = btInitialized;
+
+  hostSetFreeHeap(BT_MIN_HEAP + 40000);
+  audioSystemReady = false;
+  btInitialized = false;
+  a2dp_source.set_connected(false);
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);
+  hostSetMillis(0);
+
+  // Before the stack is up: nothing.
+  audioRingService();
+  CHECK(audioRingBuffer == nullptr);
+
+  // Stack up, nothing connected: still nothing - the connect setup gets the heap.
+  audioSystemReady = true;
+  btInitialized = true;
+  audioRingService();
+  CHECK(audioRingBuffer == nullptr);
+
+  // Connected, but inside the settling window: still nothing.
+  a2dp_source.set_connected(true);
+  hostSetMillis(1000);
+  audioRingService();
+  CHECK(audioRingBuffer == nullptr);
+  hostSetMillis(4000);              // 3 s after the connection was first seen
+  audioRingService();
+  CHECK(audioRingBuffer != nullptr);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // An already-streaming link skips the wait: audio is wanted now.
+  a2dp_source.set_connected(false);
+  hostSetMillis(9000);
+  audioRingService();
+  a2dp_source.set_connected(true);
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_STARTED);
+  audioRingService();
+  CHECK(audioRingBuffer != nullptr);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // A second call must not allocate twice.
+  a2dp_source.set_connected(true);
+  hostSetMillis(20000);
+  audioRingService();
+  uint8_t *first = audioRingBuffer;
+  audioRingService();
+  CHECK(audioRingBuffer == first);
+
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  audioSystemReady = wasReady;
+  btInitialized = wasBt;
+  a2dp_source.set_connected(false);
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);
+  hostSetFreeHeap(200000);
+}
+
 static void testRingSizing() {
   SUITE("ring sizing");
   audioRingBuffer = nullptr;
@@ -1315,7 +1477,7 @@ static void testRingSizing() {
 
   // Enough for the middle size but not the preferred one: step down instead of
   // eating the margin the Bluetooth stack allocates its own queues from.
-  hostSetFreeHeap(BT_MIN_HEAP + 20000);
+  hostSetFreeHeap(BT_MIN_HEAP + 14000);
   CHECK_EQ(allocAudioRing(), RING_BUF_SIZE_ALT);
   CHECK_EQ(audioRingBytes, RING_BUF_SIZE_ALT);
   free(audioRingBuffer);
@@ -1678,6 +1840,8 @@ int main() {
   testAudio();
   testHttpDate();
   testRingSizing();
+  testLazyRing();
+  testMusicStart();
   testWifiSync();
   testPomodoroDates();
   testPersistence();

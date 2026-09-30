@@ -1,4 +1,5 @@
 #include "HomeApp.h"
+#include "EarbudControls.h"
 #include "Globals.h"
 #include "DisplayUtils.h"
 #include "TimeService.h"
@@ -103,53 +104,38 @@ void handleHomeTouch(bool touched, int sx, int sy) {
         drawHomeScreen();
         return;
       }
-      if (!audioRingBuffer) {
-        // Biggest ring that still leaves the Bluetooth stack its floor: the
-        // stack allocates its queues and stream buffers when playback starts,
-        // and a ring that ate into that margin is how "playing X" turns into an
-        // assert a moment later.
-        if (!allocAudioRing()) {
-          printCentered("Not enough memory", 160, 130, &FreeSans9pt7b, DEL_COLOR);
-          printCentered("Close other apps and try again", 160, 148, &FreeSans9pt7b, MUTED_COLOR);
-          delay(2000);
-          drawHomeScreen();
-          return;
-        }
-      }
       if (!audioTaskHandle) {
         // The old core/priority pair: above the UI loop so a repaint cannot
         // delay an SD read, on the core the main loop runs on so the Bluetooth
         // stack keeps its own core to itself.
-        xTaskCreatePinnedToCore(audioFeederTask, "AudioFeeder", 4096, NULL, 2, &audioTaskHandle, 1);
+        xTaskCreatePinnedToCore(audioFeederTask, "AudioFeeder", 3072, NULL, 2, &audioTaskHandle, 1);
         delay(150);
         Serial.printf("[I][music] feeder task on core 1 (prio 2)\n");
       }
-      // Load and pre-fill *before* the stack is asked to connect: the first
-      // packets then carry music instead of the silence the buds would otherwise
-      // hear while the card is still being opened.
+      // The track is opened now, but the ring buffer is deliberately not
+      // allocated until the connection has settled - see audioRingService().
       loadPlaylist();
       if (numTracks > 0 && !audioFile) {
         playTrack(currentTrack);
         isPlaying = false;
       }
-      {
-        unsigned long t0 = millis();
-        int prefill = min(audioRingBytes / 2, (int)(44100 * 4 / 2));   // up to ~0.5 s
-        while (getRingBufferAvailableRead() < prefill && millis() - t0 < 600) delay(5);
-        Serial.printf("[I][music] pre-buffered %d bytes of %d\n",
-                      getRingBufferAvailableRead(), audioRingBytes);
-      }
       printCentered("Starting Bluetooth...", 160, 130, &FreeSans9pt7b, MUTED_COLOR);
       audioSystemReady = true;
+      // Registers the AVRCP passthrough handler *before* the stack starts: the
+      // library only brings up its AVRCP target when that is in place, and the
+      // target is what the earbud buttons talk to.  (It was never called from
+      // the firmware before, which is why the buttons did nothing.)
+      earbudControlsPrepare();
       delay(50);
       a2dp_source.start(EARBUD_NAME, get_audio_data);
       delay(1200);
       a2dp_source.set_volume(127);
       applyVolume();
       btInitialized = true;
+      Serial.printf("[I][music] stack up, free heap %u min %u\n",
+                    (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
     }
-    // The feeder keeps reading while the connect happens; a track that ends
-    // before the buds arrive is restarted by the advance in the main loop.
+    // The track is open; the feeder takes over as soon as the ring is there.
     if (numTracks > 0 && !audioFile) playTrack(currentTrack);
     currentState = STATE_MUSIC;
     drawMusicScreen(true);

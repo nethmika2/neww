@@ -30,6 +30,10 @@ void earbudControlsPrepare();
 void earbudNotifyStep();       // one pass of the notification replier (tests)
 void earbudControlsPoll();
 
+#ifdef HOSTCHECK
+void earbudControlsPrepareResetForTest();
+#endif
+
 bool earbudControlsEnabled();
 void earbudControlsSetEnabled(bool on);
 

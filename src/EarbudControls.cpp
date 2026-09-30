@@ -63,6 +63,7 @@ static int lastSentVolume = -1;
 static volatile int lastNotifyError = 0;
 static volatile int lastNotifyEvent = 0;
 
+static bool prepareDone = false;
 static volatile int eventCount = 0;
 static char lastEventName[18] = "none";
 
@@ -211,7 +212,8 @@ static void earbudControlsAttachTarget() {
   if (tgCallbackAttached) return;
   if (esp_avrc_tg_register_callback(earbudTgCallback) == ESP_OK) {
     tgCallbackAttached = true;
-    Serial.printf("[I][buds] AVRCP target notifications enabled\n");
+    Serial.printf("[I][buds] AVRCP target on, free heap %u min %u\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
   }
 }
 
@@ -285,14 +287,26 @@ void earbudAbsoluteVolumeHandler(uint8_t wireVolume) {
 }
 
 void earbudControlsPrepare() {
+  // Idempotent: the library reads "was a passthrough callback registered before
+  // start()" once, when the stack comes up, so this must run exactly before
+  // that - and must not re-register if the music app is opened again.
+  if (prepareDone) return;
+  prepareDone = true;
   earbudEnabled = prefs.getBool("earbud", true);
-  // Registered even while the feature is switched off: the AVRCP target has to
-  // exist before the stack starts, and the handler itself checks the setting,
-  // so the Settings toggle takes effect immediately.
-  a2dp_source.set_avrc_passthru_command_callback(earbudPassthruHandler);
-  // Advertise the notifications the buds rely on.  The library pushes this list
-  // into the AVRCP target during start().
-  a2dp_source.set_avrc_rn_events({ ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_PLAY_STATUS_CHANGE });
+  // The library initialises its AVRCP *target* only when a passthrough callback
+  // is registered before start().  That target costs memory on top of the
+  // controller side the library always runs, and memory at connect time is
+  // exactly what was in short supply (see audioRingService()), so the target is
+  // only brought up when the buttons are actually wanted.  With the toggle off
+  // the stack is stock and no memory is spent on it.
+  if (earbudEnabled) {
+    a2dp_source.set_avrc_passthru_command_callback(earbudPassthruHandler);
+    // Advertise the notifications the buds rely on.  The library pushes this
+    // list into the AVRCP target during start().
+    a2dp_source.set_avrc_rn_events({ ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_PLAY_STATUS_CHANGE });
+  } else {
+    Serial.printf("[I][buds] earbud buttons off, AVRCP target not started\n");
+  }
   // Replies go out from here, not from the Bluetooth callback: the callback's
   // task has a few KB of stack and is not the place to call stack APIs from.
   if (!earbudNotifyTaskHandle) {
@@ -405,3 +419,8 @@ void earbudControlsPoll() {
     redrawCurrentScreen();
   }
 }
+
+#ifdef HOSTCHECK
+// Lets the host tests re-run the "stack comes up" ordering check.
+void earbudControlsPrepareResetForTest() { prepareDone = false; }
+#endif

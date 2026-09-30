@@ -292,6 +292,9 @@ bool syncTimeNTP(bool showUI) {
   }
 
   wifiTeardown();
+  // The network stack keeps a good part of what it allocated, which matters
+  // because Bluetooth is started later with whatever is left.
+  Serial.printf("[I][wifi] radio off, free heap %u\n", (unsigned)ESP.getFreeHeap());
   if (cancelled) return false;
   if (showUI) {
     if (timeSynced) showToast("Clock updated!");

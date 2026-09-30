@@ -284,7 +284,10 @@ void handleSettingsTouch(bool touched, int sx, int sy) {
     bool on = sx <= COL_R + (CARD_W / 2);
     flashButton(COL_R + 10, ROW_2 + 20, CARD_W - 20, 26, RADIUS_SM);
     earbudControlsSetEnabled(on);
-    showToast(on ? "Earbud buttons on" : "Earbud buttons off");
+    // The AVRCP target is brought up once, when the Bluetooth stack starts, so a
+    // switch that is turned on later needs a restart to take effect.
+    if (on && btInitialized) showToast("On - restart to enable");
+    else showToast(on ? "Earbud buttons on" : "Earbud buttons off");
     drawSettingsScreen();
     return;
   }

@@ -12,6 +12,15 @@ extern BluetoothA2DPCommon *actual_bluetooth_a2dp_common;
 
 extern "C" void ccall_app_rc_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param);
 
+// The A2DP audio states the firmware asks about when it decides to take the
+// ring buffer back (see audioRingService).
+typedef enum {
+  ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND = 0,
+  ESP_A2D_AUDIO_STATE_STOPPED = 1,
+  ESP_A2D_AUDIO_STATE_STARTED = 2,
+  ESP_A2D_AUDIO_STATE_SUSPEND = 3
+} esp_a2d_audio_state_t;
+
 class A2DPVolumeControl {
  public:
   int volume = 50;
@@ -24,11 +33,15 @@ class BluetoothA2DPCommon {
     bt_name_ = name;
     actual_bluetooth_a2dp_common = this;
     started_ = true;
+    startCount++;
+    startAfterPassthru = (passthru != nullptr);
     return true;
   }
   void end() { started_ = false; }
   bool is_connected() { return connected_; }
   bool is_connected(int) { return connected_; }
+  esp_a2d_audio_state_t get_audio_state() { return audioState_; }
+  void hostSetAudioState(esp_a2d_audio_state_t st) { audioState_ = st; }
   void set_connected(bool c) { connected_ = c; }
   void set_volume(int v) { volume_ = v; }
   int get_volume() { return volume_; }
@@ -41,11 +54,15 @@ class BluetoothA2DPCommon {
 
   // Harness helpers
   int lastTgEvent = -1;
+  int startCount = 0;
+  bool startAfterPassthru = false;
+  void hostResetPassthru() { passthru = nullptr; passthruActiveFlag = false; rnEvents.clear(); }
   int volume_ = 50;
 
  protected:
   bool started_ = false;
   bool connected_ = false;
+  esp_a2d_audio_state_t audioState_ = ESP_A2D_AUDIO_STATE_SUSPEND;
   bool passthruActiveFlag = false;
   void (*passthru)(uint8_t, bool) = nullptr;
   std::vector<esp_avrc_rn_event_ids_t> rnEvents;

@@ -62,7 +62,7 @@
 
 // Wi-Fi & NTP Configuration
 // Printed on every boot so a serial log says which build is on the device.
-static const char* const FW_BUILD = "2026-09-30b (bt hardening, http-first time)";
+static const char* const FW_BUILD = "2026-10-01a (ring after connect, more heap for BT)";
 
 static const char* const WIFI_SSID = "Dialog 4G New";
 static const char* const WIFI_PASS = "tgrd-0241320-";
@@ -122,10 +122,10 @@ static const char* const NTP_3 = "pool.ntp.org";
 // a small jitter instead of a dropout.  setup picks the largest of these three
 // that the heap can spare (see HomeApp.cpp); the smallest is the floor below
 // which playback is not worth starting.
-#define RING_BUF_SIZE (24 * 1024)
-#define RING_BUF_SIZE_ALT (16 * 1024)
+#define RING_BUF_SIZE (16 * 1024)
+#define RING_BUF_SIZE_ALT (12 * 1024)
 #define RING_BUF_SIZE_MIN (8 * 1024)
-#define FEEDER_CHUNK 4096
+#define FEEDER_CHUNK 2048
 #define BT_MIN_HEAP 120000
 #define AUDIO_TEST_TONE 0
 // How often the [I][audio] telemetry line is printed while a track plays.
