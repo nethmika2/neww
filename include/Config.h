@@ -62,7 +62,7 @@
 
 // Wi-Fi & NTP Configuration
 // Printed on every boot so a serial log says which build is on the device.
-static const char* const FW_BUILD = "2026-10-01a (ring after connect, more heap for BT)";
+static const char* const FW_BUILD = "2026-10-01b (ring after connect, play when ready)";
 
 static const char* const WIFI_SSID = "Dialog 4G New";
 static const char* const WIFI_PASS = "tgrd-0241320-";
@@ -127,6 +127,12 @@ static const char* const NTP_3 = "pool.ntp.org";
 #define RING_BUF_SIZE_MIN (8 * 1024)
 #define FEEDER_CHUNK 2048
 #define BT_MIN_HEAP 120000
+// Headroom kept free *after* the ring is taken, once the stack is already up and
+// streaming.  The pre-start floor above is for the whole stack coming up; by the
+// time the earbuds are connected the stack owns most of the heap already, so the
+// ring only has to leave room for the stream buffers.  Matches what the older
+// builds ran with (they held the ring before start and streamed fine).
+#define RING_RESERVE_POST_CONNECT (20 * 1024)
 #define AUDIO_TEST_TONE 0
 // How often the [I][audio] telemetry line is printed while a track plays.
 #define AUDIO_LOG_PERIOD_MS 5000UL

@@ -1392,6 +1392,37 @@ static void testMusicStart() {
   hostSetFreeHeap(200000);
 }
 
+// The post-connect reserve must be small enough to actually allocate on this
+// board (the stack owns most of the heap by then) and big enough to leave the
+// stream room.  This is the gate that left the user with silence.
+static void testPostConnectReserve() {
+  SUITE("post-connect reserve");
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // The heap the hardware actually had once the earbuds were connected (43912
+  // free): the biggest ring that keeps the post-connect reserve wins.
+  hostSetFreeHeap(43912);
+  CHECK_EQ(allocAudioRing(RING_RESERVE_POST_CONNECT, true), RING_BUF_SIZE);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Tighter: the 12 KB ring still leaves the reserve.
+  hostSetFreeHeap(33000);
+  CHECK_EQ(allocAudioRing(RING_RESERVE_POST_CONNECT, true), RING_BUF_SIZE_ALT);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // The same heap, judged by the pre-start floor: nothing fits, which is exactly
+  // the bug - the ring has to be sized against the reserve that applies.
+  hostSetFreeHeap(43912);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), 0);
+  hostSetFreeHeap(200000);
+}
+
 static void testLazyRing() {
   SUITE("lazy ring");
   audioRingBuffer = nullptr;
@@ -1405,6 +1436,16 @@ static void testLazyRing() {
   a2dp_source.set_connected(false);
   a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);
   hostSetMillis(0);
+
+  // A track opened the way the music app does it: the file is ready, the ring is
+  // the only thing missing.
+  SD.reset();
+  hostMakeWav("/ready.wav", 1);
+  sdReady = true;
+  numTracks = 1;
+  playlist[0] = "ready.wav";
+  playTrack(0);
+  isPlaying = false;
 
   // Before the stack is up: nothing.
   audioRingService();
@@ -1421,10 +1462,14 @@ static void testLazyRing() {
   hostSetMillis(1000);
   audioRingService();
   CHECK(audioRingBuffer == nullptr);
+  CHECK(!isPlaying);                // nothing plays without a ring
   hostSetMillis(4000);              // 3 s after the connection was first seen
   audioRingService();
   CHECK(audioRingBuffer != nullptr);
   CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
+  // ...and the moment the ring exists, the player starts: the track was opened
+  // before the connection, so the ring was the only thing left to wait for.
+  CHECK(isPlaying);
   free(audioRingBuffer);
   audioRingBuffer = nullptr;
   audioRingBytes = 0;
@@ -1467,7 +1512,7 @@ static void testRingSizing() {
 
   // Ample heap: the preferred size.
   hostSetFreeHeap(BT_MIN_HEAP + 40000);
-  CHECK_EQ(allocAudioRing(), RING_BUF_SIZE);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), RING_BUF_SIZE);
   CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
   CHECK(audioRingBuffer != nullptr);
   for (int i = 0; i < 64; i++) CHECK_EQ(audioRingBuffer[i], 0);   // zeroed
@@ -1478,7 +1523,7 @@ static void testRingSizing() {
   // Enough for the middle size but not the preferred one: step down instead of
   // eating the margin the Bluetooth stack allocates its own queues from.
   hostSetFreeHeap(BT_MIN_HEAP + 14000);
-  CHECK_EQ(allocAudioRing(), RING_BUF_SIZE_ALT);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), RING_BUF_SIZE_ALT);
   CHECK_EQ(audioRingBytes, RING_BUF_SIZE_ALT);
   free(audioRingBuffer);
   audioRingBuffer = nullptr;
@@ -1486,7 +1531,7 @@ static void testRingSizing() {
 
   // Only the smallest ring still leaves the stack its floor.
   hostSetFreeHeap(BT_MIN_HEAP + 9000);
-  CHECK_EQ(allocAudioRing(), RING_BUF_SIZE_MIN);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), RING_BUF_SIZE_MIN);
   free(audioRingBuffer);
   audioRingBuffer = nullptr;
   audioRingBytes = 0;
@@ -1494,7 +1539,7 @@ static void testRingSizing() {
   // Nothing fits: report it instead of starting Bluetooth into a heap that
   // cannot hold its queues.
   hostSetFreeHeap(BT_MIN_HEAP + 1000);
-  CHECK_EQ(allocAudioRing(), 0);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), 0);
   CHECK(audioRingBuffer == nullptr);
   hostSetFreeHeap(200000);
 }
@@ -1840,6 +1885,7 @@ int main() {
   testAudio();
   testHttpDate();
   testRingSizing();
+  testPostConnectReserve();
   testLazyRing();
   testMusicStart();
   testWifiSync();

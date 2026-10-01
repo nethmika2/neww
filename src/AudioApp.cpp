@@ -260,6 +260,8 @@ void loadPlaylist() {
 void audioRingService() {
   static bool sawConnected = false;
   static unsigned long connectedAt = 0;
+  static unsigned long nextTry = 0;
+  static int attempt = 0;
   if (audioRingBuffer || !audioSystemReady || !btInitialized) return;
   if (!a2dp_source.is_connected()) return;
   if (!sawConnected) {
@@ -270,19 +272,36 @@ void audioRingService() {
   }
   bool streaming = a2dp_source.get_audio_state() == ESP_A2D_AUDIO_STATE_STARTED;
   if (!streaming && millis() - connectedAt < 2500) return;   // let the setup finish
-  if (allocAudioRing() > 0) {
+  if (millis() < nextTry) return;                            // do not spin on the allocator
+
+  attempt++;
+  // Only the headroom the *stream* needs is required here: the stack has already
+  // allocated everything it needs to connect, so holding out for the whole
+  // BT_MIN_HEAP again would never allocate on this board and the music would
+  // never start.  (The pre-start check in HomeApp still uses the big floor.)
+  if (allocAudioRing(RING_RESERVE_POST_CONNECT, attempt == 1) > 0) {
+    // The ring is the last thing the player was waiting for: start playing.
+    if (!isPlaying && audioFile && currentWav.valid) isPlaying = true;
     Serial.printf("[I][music] ring ready, free heap %u min %u\n",
                   (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
+    return;
+  }
+  nextTry = millis() + 2000;
+  if (attempt == 1) {
+    Serial.printf("[I][music] ring not yet (%u free, %u wanted spare), retrying\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)RING_RESERVE_POST_CONNECT);
   }
 }
 
-int allocAudioRing() {
+int allocAudioRing(uint32_t reserveBytes, bool verbose) {
   const int sizes[3] = { RING_BUF_SIZE, RING_BUF_SIZE_ALT, RING_BUF_SIZE_MIN };
   uint32_t heap = (uint32_t)ESP.getFreeHeap();
   for (int i = 0; i < 3; i++) {
-    if (heap < (uint32_t)sizes[i] + (uint32_t)BT_MIN_HEAP) {
-      Serial.printf("[I][music] ring %d leaves %u of %u needed for Bluetooth\n",
-                    sizes[i], (unsigned)(heap - sizes[i]), (unsigned)BT_MIN_HEAP);
+    if (heap < (uint32_t)sizes[i] + reserveBytes) {
+      if (verbose) {
+        Serial.printf("[I][music] ring %d leaves %u, want %u spare\n",
+                      sizes[i], (unsigned)(heap - sizes[i]), (unsigned)reserveBytes);
+      }
       continue;
     }
     uint8_t *buf = (uint8_t *)malloc(sizes[i]);
@@ -290,7 +309,7 @@ int allocAudioRing() {
     memset(buf, 0, sizes[i]);
     audioRingBuffer = buf;
     audioRingBytes = sizes[i];
-    Serial.printf("[I][music] ring buffer %d bytes (%u free for Bluetooth)\n",
+    Serial.printf("[I][music] ring buffer %d bytes, %u free after\n",
                   sizes[i], (unsigned)ESP.getFreeHeap());
     return sizes[i];
   }
