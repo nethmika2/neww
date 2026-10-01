@@ -32,9 +32,17 @@ static volatile uint32_t stBytesFed = 0;
 // What the Bluetooth stack pulled from us.  The A2DP source asks for 44100*4
 // bytes a second while the link is healthy, so this is the figure that says
 // whether a stutter is ours (low) or the radio's (the stack asking for less).
-static volatile uint32_t stOutBytes = 0;
+static volatile uint32_t stOutBytes = 0;    // cumulative, never reset by logging
 static volatile uint32_t stOutCalls = 0;
-static unsigned long stWindowStart = 0;
+static unsigned long stLogBytes = 0;        // snapshot the log line measures from
+static unsigned long stLogAt = 0;
+// The "is the link keeping up" verdict has its own window.  It used to share the
+// telemetry window, which meant every report reset it - so a link that was
+// behind for minutes never accumulated the continuous time the recovery gate
+// waits for, and the rebuild could never fire.
+static uint32_t stLinkBytes = 0;
+static unsigned long stLinkAt = 0;
+static unsigned long stBehindMs = 0;
 static volatile uint32_t stStarve = 0;
 static volatile uint32_t stSilenceBytes = 0;
 static volatile uint32_t stPasses = 0;
@@ -63,28 +71,56 @@ int audioStateNow() { return stAudioState; }
 uint32_t audioOutBytes() { return stOutBytes; }
 uint32_t audioOutCalls() { return stOutCalls; }
 
+// Rate over the current telemetry window (what the log line reports).
 uint32_t audioOutKBps() {
-  unsigned long dt = millis() - stWindowStart;
+  unsigned long dt = millis() - stLogAt;
   if (dt == 0) return 0;
-  return (uint32_t)(((uint64_t)stOutBytes * 1000ULL) / ((uint64_t)dt * 1024ULL));
+  return (uint32_t)(((uint64_t)(stOutBytes - stLogBytes) * 1000ULL) / ((uint64_t)dt * 1024ULL));
 }
+
+// How long the link has been continuously behind.  Judged over 8 second windows
+// so a single slow moment cannot trip it, and kept independent of the logging.
+static void audioLinkVerdictUpdate() {
+  unsigned long now = millis();
+  if (!isPlaying || !btInitialized) {
+    stBehindMs = 0;
+    stLinkBytes = stOutBytes;
+    stLinkAt = now;
+    return;
+  }
+  unsigned long dt = now - stLinkAt;
+  if (dt < 8000) return;
+  uint32_t got = stOutBytes - stLinkBytes;
+  uint32_t kbps = (uint32_t)(((uint64_t)got * 1000ULL) / ((uint64_t)dt * 1024ULL));
+  if (kbps < AUDIO_LINK_WARN_KBPS) {
+    stBehindMs += dt;
+    if (stBehindMs > 600000UL) stBehindMs = 600000UL;
+  } else {
+    stBehindMs = 0;
+  }
+  stLinkBytes = stOutBytes;
+  stLinkAt = now;
+}
+
+unsigned long audioLinkBehindMs() { return stBehindMs; }
 
 // True while the stack is pulling well under real time: the A2DP transmit queue
 // is backed up, which means the air link cannot drain it.  The earbuds starve in
 // cycles when this lasts, and it is not something the app can feed its way out
 // of - the radio is the limit.
 bool audioLinkBehind() {
-  if (!isPlaying || !btInitialized) return false;
-  unsigned long dt = millis() - stWindowStart;
-  if (dt < 2000) return false;
-  return audioOutKBps() < AUDIO_LINK_WARN_KBPS;
+  return isPlaying && btInitialized && stBehindMs >= 8000;
 }
 
 void audioStatsReset() {
   stBytesFed = 0;
   stOutBytes = 0;
   stOutCalls = 0;
-  stWindowStart = millis();
+  stLogBytes = 0;
+  stLogAt = millis();
+  stLinkBytes = 0;
+  stLinkAt = millis();
+  stBehindMs = 0;
   stStarve = 0;
   stSilenceBytes = 0;
   stPasses = 0;
@@ -112,20 +148,23 @@ void audioLogStats(const char* why) {
   if (audioRingBuffer && audioRingBytes > 0) fill = (getRingBufferAvailableRead() * 100) / audioRingBytes;
   // "out" is what the Bluetooth stack took; "fed" is what the SD side delivered.
   // A stutter with out < ~170 KB/s is the link, with out healthy it is not.
-  Serial.printf("[I][audio] %s: out %lu KB/s (%lu calls/s), fed %lu KB/s, ring %d%%, starve %lu (%lu ms silence), state %d\n",
+  Serial.printf("[I][audio] %s: out %lu KB/s (%lu calls/s), fed %lu KB/s, ring %d%%, starve %lu (%lu ms silence), behind %lu s, state %d\n",
                 why, (unsigned long)audioOutKBps(),
                 (unsigned long)(stOutCalls * 1000UL / (dt ? dt : 1)),
                 (unsigned long)fedKbps, fill,
                 (unsigned long)stStarve, (unsigned long)(stSilenceBytes / 176),
+                (unsigned long)(stBehindMs / 1000),
                 (int)a2dp_source.get_audio_state());
   stLastLog = now;
   stLastLogBytes = fed;
-  stOutBytes = 0;
-  stOutCalls = 0;
-  stWindowStart = now;
+  stLogBytes = stOutBytes;
+  stLogAt = now;
 }
 
 void audioLogStatsIfDue() {
+  // Runs every loop iteration, so the verdict keeps its own clock whether or not
+  // anything is being logged.
+  audioLinkVerdictUpdate();
   if (!btInitialized || !isPlaying) return;
   unsigned long since = millis() - stLastLog;
   // Quiet by default (every 30 s) - the serial monitor should not be a firehose
@@ -133,7 +172,7 @@ void audioLogStatsIfDue() {
   // is exactly when the log is worth reading.
   if (audioLinkBehind()) {
     if (since < 5000) return;
-    audioLogStats("link behind");
+    audioLogStats(stBehindMs >= LINK_BEHIND_MS ? "behind, recovery due" : "link behind");
     return;
   }
   if (since < AUDIO_LOG_PERIOD_MS) return;
@@ -737,28 +776,23 @@ void handleMusicListTouch(bool touched, int sx, int sy) {
 // rebuild the stream: a fresh stream is exactly the state the user reports as
 // good.  Gated hard - only while actually playing, only after the link has been
 // behind for LINK_BEHIND_MS, and at most once per LINK_RESTART_GAP_MS.
-static unsigned long linkBehindSince = 0;
 static unsigned long linkLastRestart = 0;
 
 void audioLinkRecoveryReset() {
-  linkBehindSince = 0;
   linkLastRestart = 0;
+  stBehindMs = 0;
+  stLinkBytes = stOutBytes;
+  stLinkAt = millis();
 }
 
 bool audioLinkRecoveryService() {
-  unsigned long& behindSince = linkBehindSince;
   unsigned long& lastRestart = linkLastRestart;
-  if (!audioLinkBehind()) {
-    behindSince = 0;
-    return false;
-  }
+  if (audioLinkBehindMs() < LINK_BEHIND_MS) return false;
   unsigned long now = millis();
-  if (behindSince == 0) behindSince = now;
-  if (now - behindSince < LINK_BEHIND_MS) return false;
   if (lastRestart != 0 && now - lastRestart < LINK_RESTART_GAP_MS) return false;
 
-  Serial.printf("[I][bt] link behind for %lu s (out %lu KB/s), rebuilding the stream\n",
-                (now - behindSince) / 1000, (unsigned long)audioOutKBps());
+  Serial.printf("[I][bt] link behind %lu s (out %lu KB/s), rebuilding the stream\n",
+                (unsigned long)(audioLinkBehindMs() / 1000), (unsigned long)audioOutKBps());
   // Flush what is queued and start over; the library reconnects to the earbuds
   // it was last paired with.
   a2dp_source.end();
@@ -769,7 +803,6 @@ bool audioLinkRecoveryService() {
   esp_bt_sleep_disable();
   audioStatsReset();
   lastRestart = millis();
-  behindSince = lastRestart;
   Serial.printf("[I][bt] stream restarted, free heap %u\n", (unsigned)ESP.getFreeHeap());
   return true;
 }

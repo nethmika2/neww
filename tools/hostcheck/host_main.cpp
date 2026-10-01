@@ -1445,12 +1445,18 @@ static void testLinkRecovery() {
   audioStatsReset();
   audioLinkRecoveryReset();
 
+  // 4 KB/s for long enough that the verdict sees it (windows of 8 s, then the
+  // recovery needs LINK_BEHIND_MS of continuous degradation).
   Frame buf[128];
-  for (int i = 0; i < 4; i++) get_audio_data(buf, 128);   // 2 KB over the window
-  hostSetMillis(2500);                                    // 2 KB in 2.5 s: far behind
+  unsigned long t = 0;
+  for (int win = 0; win < 4; win++) {
+    t += 8000;
+    hostSetMillis(t);
+    for (int i = 0; i < 8; i++) get_audio_data(buf, 128);   // 4 KB per 8 s
+    audioLogStatsIfDue();                                   // drives the verdict
+  }
   CHECK(audioLinkBehind());
-  CHECK(!audioLinkRecoveryService());                     // first sighting: noting it
-  hostSetMillis(2500 + LINK_BEHIND_MS + 1000);
+  CHECK(audioLinkBehindMs() >= LINK_BEHIND_MS);
   CHECK(audioLinkRecoveryService());
   CHECK_EQ(a2dp_source.endCount, 1);
   CHECK_EQ(a2dp_source.startCount, 1);
@@ -1459,10 +1465,15 @@ static void testLinkRecovery() {
   CHECK_EQ(a2dp_source.endCount, 1);
 
   // A link that is keeping up is never rebuilt.
-  hostSetMillis(300000);
   audioStatsReset();
-  for (int i = 0; i < 344; i++) get_audio_data(buf, 128);   // real time
-  hostSetMillis(301000);
+  t += 1000;
+  hostSetMillis(t);
+  for (int win = 0; win < 3; win++) {
+    for (int i = 0; i < 344 * 8; i++) get_audio_data(buf, 128);   // real time
+    t += 8000;
+    hostSetMillis(t);
+    audioLogStatsIfDue();
+  }
   CHECK(!audioLinkBehind());
   CHECK(!audioLinkRecoveryService());
   CHECK_EQ(a2dp_source.endCount, 1);
@@ -1500,59 +1511,44 @@ static void testAudioOutTelemetry() {
   audioStatsReset();
   CHECK_EQ(audioOutBytes(), 0);
 
-  // Sixteen 512 byte requests = 8 KB over 2 seconds = 4 KB/s.
+  // The stack asks for 512 bytes at a time.  Here it gets a trickle: 4 KB in
+  // each 8 second judging window, about a tenth of real time.
   Frame buf[128];
-  for (int i = 0; i < 16; i++) get_audio_data(buf, 128);
-  CHECK_EQ(audioOutBytes(), 16 * 512);
-  CHECK_EQ(audioOutCalls(), 16);
-  hostSetMillis(2000);
-  CHECK_EQ(audioOutKBps(), 4);
-  // 4 KB/s is nowhere near real time, so the link is flagged as the limit.
+  unsigned long t = 0;
+  for (int win = 0; win < 3; win++) {
+    for (int i = 0; i < 8; i++) get_audio_data(buf, 128);   // 4 KB
+    t += 8000;
+    hostSetMillis(t);
+    audioLogStatsIfDue();                                   // drives the verdict
+  }
+  CHECK_EQ(audioOutBytes(), 24 * 512);
+  CHECK_EQ(audioOutCalls(), 24);
   CHECK(audioLinkBehind());
+  CHECK(audioLinkBehindMs() >= 8000);
 
-  // Real time (172 KB/s would be 344 calls of 512 B per second): not behind.
+  // The telemetry line must not disturb the verdict: reporting is not judging.
+  unsigned long behindBefore = audioLinkBehindMs();
+  audioLogStats("test");
+  CHECK_EQ(audioOutKBps(), 0);                          // the report window restarted
+  CHECK(audioLinkBehindMs() >= behindBefore);           // the verdict did not
+
+  // Real time is 344 calls of 512 B per second = 172 KiB/s (176,128 B/s): not
+  // behind.
   audioStatsReset();
-  for (int i = 0; i < 344; i++) get_audio_data(buf, 128);
-  hostSetMillis(3000);              // 1 s later
+  for (int win = 0; win < 3; win++) {
+    for (int i = 0; i < 344 * 8; i++) get_audio_data(buf, 128);
+    t += 8000;
+    hostSetMillis(t);
+    audioLogStatsIfDue();
+  }
   CHECK_EQ(audioOutKBps(), 172);
   CHECK(!audioLinkBehind());
-
-  // An idle player is never "behind", however quiet the line is.
-  isPlaying = false;
-  CHECK(!audioLinkBehind());
+  CHECK_EQ(audioLinkBehindMs(), 0UL);
 
   free(audioRingBuffer);
   audioRingBuffer = nullptr;
   audioRingBytes = 0;
   isPlaying = false;
-  hostSetFreeHeap(200000);
-}
-
-static void testPostConnectReserve() {
-  SUITE("post-connect reserve");
-  audioRingBuffer = nullptr;
-  audioRingBytes = 0;
-
-  // The heap the hardware actually had once the earbuds were connected (43912
-  // free): the biggest ring that keeps the post-connect reserve wins.
-  hostSetFreeHeap(43912);
-  CHECK_EQ(allocAudioRing(RING_RESERVE_POST_CONNECT, true), RING_BUF_SIZE);
-  CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
-  free(audioRingBuffer);
-  audioRingBuffer = nullptr;
-  audioRingBytes = 0;
-
-  // Tighter: the 12 KB ring still leaves the reserve.
-  hostSetFreeHeap(33000);
-  CHECK_EQ(allocAudioRing(RING_RESERVE_POST_CONNECT, true), RING_BUF_SIZE_ALT);
-  free(audioRingBuffer);
-  audioRingBuffer = nullptr;
-  audioRingBytes = 0;
-
-  // The same heap, judged by the pre-start floor: nothing fits, which is exactly
-  // the bug - the ring has to be sized against the reserve that applies.
-  hostSetFreeHeap(43912);
-  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), 0);
   hostSetFreeHeap(200000);
 }
 
@@ -1675,6 +1671,37 @@ static void testRingSizing() {
   hostSetFreeHeap(BT_MIN_HEAP + 1000);
   CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), 0);
   CHECK(audioRingBuffer == nullptr);
+  hostSetFreeHeap(200000);
+}
+
+// The post-connect reserve must be small enough to actually allocate on this
+// board (the stack owns most of the heap by then) and big enough to leave the
+// stream room.  This is the gate that left the user with silence.
+static void testPostConnectReserve() {
+  SUITE("post-connect reserve");
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // The heap the hardware actually had once the earbuds were connected (43860
+  // free): the biggest ring that keeps the post-connect reserve wins.
+  hostSetFreeHeap(43860);
+  CHECK_EQ(allocAudioRing(RING_RESERVE_POST_CONNECT, true), RING_BUF_SIZE);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Tighter: the 12 KB ring still leaves the reserve.
+  hostSetFreeHeap(33000);
+  CHECK_EQ(allocAudioRing(RING_RESERVE_POST_CONNECT, true), RING_BUF_SIZE_ALT);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // The same heap, judged by the pre-start floor: nothing fits, which is exactly
+  // the bug - the ring has to be sized against the reserve that applies.
+  hostSetFreeHeap(43860);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), 0);
   hostSetFreeHeap(200000);
 }
 

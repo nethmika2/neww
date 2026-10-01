@@ -29,7 +29,8 @@ uint32_t audioFeederPasses();
 uint32_t audioOutBytes();      // bytes handed to the Bluetooth stack
 uint32_t audioOutCalls();      // data callbacks served
 uint32_t audioOutKBps();       // the above per second, since the last report
-bool audioLinkBehind();        // the stack is pulling well under real time
+bool audioLinkBehind();        // the stack has been pulling under real time
+unsigned long audioLinkBehindMs();  // for how long, continuously
 int audioStateNow();           // last A2DP audio state the stack reported (-1 = none)
 void audioStateCallback(esp_a2d_audio_state_t state, void*);   // register before start()
 bool audioLinkRecoveryService();   // rebuilds a throttled stream (see the .cpp)

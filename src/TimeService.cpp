@@ -234,10 +234,10 @@ bool syncTimeNTP(bool showUI) {
   // retry backoff) and a short window, because a server that is reachable
   // answers in well under a second.
   struct NtpPass { const char* label; const char* server; };
-  String namesLabel = String("names -> ") + NTP_1;
+  String namesLabel = String("names, ") + NTP_1;
   NtpPass ntpPasses[3] = {
     { namesLabel.c_str(), NTP_1 },
-    { "router", gateway.length() ? gateway.c_str() : NTP_IP_1 },
+    { gateway.length() ? "the router" : "cloudflare ip", gateway.length() ? gateway.c_str() : NTP_IP_1 },
     { "cloudflare ip", NTP_IP_1 },
   };
   auto tryNtp = [&]() -> bool {
@@ -253,8 +253,8 @@ bool syncTimeNTP(bool showUI) {
         }
         delay(100);
       }
-      Serial.printf("[I][ntp] pass %d (%s -> %s): %s\n", pass + 1, ntpPasses[pass].label,
-                    ntpPasses[pass].server, timeSynced ? "clock set" : "no reply");
+      Serial.printf("[I][ntp] pass %d (%s): %s\n", pass + 1, ntpPasses[pass].label,
+                    timeSynced ? "clock set" : "no reply");
     }
     return timeSynced;
   };
