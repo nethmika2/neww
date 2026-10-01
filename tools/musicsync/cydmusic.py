@@ -100,6 +100,23 @@ def ffmpeg_args():
 
 
 # ----------------------------------------------------------- download/convert
+BROWSERS = ("firefox", "chrome", "edge", "brave", "opera", "vivaldi", "chromium")
+LAST_BOT_WALL = False    # set by run_streaming(): YouTube said "Sign in to confirm you're not a bot"
+
+
+def run_streaming(cmd):
+    """Run a command, show its output live, and remember if YouTube raised the bot wall."""
+    global LAST_BOT_WALL
+    LAST_BOT_WALL = False
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace")
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+        if "confirm you" in line and "not a bot" in line:
+            LAST_BOT_WALL = True
+    return proc.wait() == 0
+
+
 def download(item, outdir, ffmpeg):
     """Download one link / search text with yt-dlp into outdir as .wav files."""
     is_url = re.match(r"https?://", item) is not None
@@ -109,6 +126,7 @@ def download(item, outdir, ffmpeg):
     cmd = [sys.executable, "-m", "yt_dlp", target,
            "--no-playlist" if single or not is_url else "--yes-playlist",
            "--playlist-end", str(MAX_TRACKS),
+           "-4",   # YouTube distrusts many IPv6 addresses
            "-f", "bestaudio/best", "-x", "--audio-format", "wav",
            "--postprocessor-args", "ffmpeg:" + " ".join(ffmpeg_args()),
            "--ffmpeg-location", ffmpeg,
@@ -116,7 +134,26 @@ def download(item, outdir, ffmpeg):
            "-o", str(outdir / "%(title).150B.%(ext)s")]
     if JS_RUNTIME:
         cmd += ["--js-runtimes", f"{JS_RUNTIME[0]}:{JS_RUNTIME[1]}"]
-    return subprocess.call(cmd) == 0
+    browser = load_config().get("browser")
+    if browser:
+        cmd += ["--cookies-from-browser", browser]
+    return run_streaming(cmd)
+
+
+def ask_browser():
+    """YouTube wants a signed-in session. Ask which browser has one, remember it."""
+    print("\nYouTube is asking you to sign in (its bot check). yt-dlp can borrow the login from")
+    print("a browser where you're already signed in to YouTube. FIREFOX is the one that works")
+    print("reliably; Chrome/Edge usually fail (they lock/encrypt their cookies).")
+    print("Tip: use a spare Google account, not your main one - automated use can get flagged.")
+    print(f"Browsers: {', '.join(BROWSERS)}   (Enter = skip)")
+    b = input("Browser: ").strip().lower()
+    if b not in BROWSERS:
+        return None
+    cfg = load_config()
+    cfg["browser"] = b
+    save_config(cfg)
+    return b
 
 
 def convert_local(src, outdir, ffmpeg):
@@ -134,12 +171,23 @@ def process(items, ffmpeg, downloader=download):
         with tempfile.TemporaryDirectory(prefix="cydmusic_") as tmp:
             tmp = Path(tmp)
             p = Path(item.strip('"'))
-            ok = convert_local(p, tmp, ffmpeg) if p.is_file() else downloader(item, tmp, ffmpeg)
+            if p.is_file():
+                ok = convert_local(p, tmp, ffmpeg)
+            else:
+                ok = downloader(item, tmp, ffmpeg)
+                if not ok and LAST_BOT_WALL and not load_config().get("browser") and sys.stdin.isatty():
+                    if ask_browser():
+                        ok = downloader(item, tmp, ffmpeg)
             wavs = sorted(tmp.glob("*.wav"))
             if not ok and not wavs:
-                print("   !! failed. If it says 'The page needs to be reloaded' or 'Sign in':")
-                print("      run Update-ytdlp.bat, and make sure Setup.bat installed Deno.")
-                print("      (Don't use a cookies file: it makes this error worse.)")
+                print("   !! failed.")
+                if LAST_BOT_WALL:
+                    print("      YouTube's bot check. Sign in to YouTube in FIREFOX, close Firefox, then run:")
+                    print("         python cydmusic.py --browser firefox")
+                    print("      (Chrome/Edge cookies usually can't be read.)")
+                else:
+                    print("      'The page needs to be reloaded' -> run Update-ytdlp.bat and make sure")
+                    print("      Setup.bat installed Deno. Other errors: check the link plays in a browser.")
                 continue
             for w in wavs:
                 if w.stat().st_size > FAT32_MAX:
@@ -261,11 +309,25 @@ def main():
     ap.add_argument("--sd", help="SD card drive, e.g. E:  (remembered)")
     ap.add_argument("--sync", action="store_true", help="only copy library to the SD card")
     ap.add_argument("--no-sd", action="store_true", help="download only, don't copy to a card")
+    ap.add_argument("--browser", help="borrow YouTube login from this browser (firefox recommended); 'none' to clear")
     ap.add_argument("--update", action="store_true", help="update yt-dlp")
     a = ap.parse_args()
 
     if a.update:
         sys.exit(subprocess.call([sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]", "imageio-ffmpeg"]))
+
+    if a.browser:
+        cfg = load_config()
+        if a.browser.lower() == "none":
+            cfg.pop("browser", None)
+        elif a.browser.lower() in BROWSERS:
+            cfg["browser"] = a.browser.lower()
+        else:
+            sys.exit(f"Unknown browser. Choose from: {', '.join(BROWSERS)}")
+        save_config(cfg)
+        print(f"Saved. Using browser login: {cfg.get('browser', 'none')}")
+        if not (a.items or a.sync):
+            return
 
     print(f"Library folder: {LIBRARY}\n")
     if not a.sync:
@@ -273,6 +335,8 @@ def main():
         if items:
             global JS_RUNTIME
             JS_RUNTIME = find_js_runtime()
+            print(f"JavaScript runtime: {JS_RUNTIME[1] if JS_RUNTIME else 'NONE'}")
+            print(f"Browser login: {load_config().get('browser', 'none')}")
             if JS_RUNTIME is None and any(not Path(i.strip('"')).is_file() for i in items):
                 print("!! No JavaScript runtime found. YouTube downloads will fail with")
                 print("   'The page needs to be reloaded'. Run Setup.bat (installs Deno), then")
