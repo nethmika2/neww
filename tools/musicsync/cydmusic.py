@@ -37,6 +37,7 @@ MAX_NAME = 48            # characters, keeps titles readable on the 320x240 scre
 
 LIBRARY = Path(os.environ.get("CYD_LIBRARY", Path.home() / "Music" / "CYD-Music"))
 CONFIG = Path.home() / ".cydmusic.json"
+JS_RUNTIME = None        # filled in by main()
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav", ".wma", ".webm", ".mp4"}
 
 
@@ -78,6 +79,21 @@ def find_ffmpeg():
         sys.exit("ffmpeg not found. Run Setup.bat first.")
 
 
+def find_js_runtime():
+    """YouTube needs a JavaScript runtime (Deno is best) so yt-dlp can solve its challenges.
+    Without one you get 'The page needs to be reloaded'."""
+    for name in ("deno", "node", "bun", "qjs"):
+        exe = shutil.which(name)
+        if exe:
+            return "quickjs" if name == "qjs" else name, exe
+    # winget puts deno here; a terminal opened before the install won't have it on PATH yet
+    if os.name == "nt":
+        for base in (os.environ.get("LOCALAPPDATA", ""), str(Path.home() / ".deno" / "bin")):
+            for exe in Path(base).glob("**/deno.exe") if base and Path(base).exists() else []:
+                return "deno", str(exe)
+    return None
+
+
 def ffmpeg_args():
     # what the firmware needs; pcm_s16le makes a plain WAV header it parses
     return ["-ar", str(SAMPLE_RATE), "-ac", "2", "-acodec", "pcm_s16le"]
@@ -98,6 +114,8 @@ def download(item, outdir, ffmpeg):
            "--ffmpeg-location", ffmpeg,
            "--no-warnings", "--newline",
            "-o", str(outdir / "%(title).150B.%(ext)s")]
+    if JS_RUNTIME:
+        cmd += ["--js-runtimes", f"{JS_RUNTIME[0]}:{JS_RUNTIME[1]}"]
     return subprocess.call(cmd) == 0
 
 
@@ -119,7 +137,9 @@ def process(items, ffmpeg, downloader=download):
             ok = convert_local(p, tmp, ffmpeg) if p.is_file() else downloader(item, tmp, ffmpeg)
             wavs = sorted(tmp.glob("*.wav"))
             if not ok and not wavs:
-                print("   !! failed (bad link? if it keeps happening, run Update-ytdlp.bat)")
+                print("   !! failed. If it says 'The page needs to be reloaded' or 'Sign in':")
+                print("      run Update-ytdlp.bat, and make sure Setup.bat installed Deno.")
+                print("      (Don't use a cookies file: it makes this error worse.)")
                 continue
             for w in wavs:
                 if w.stat().st_size > FAT32_MAX:
@@ -245,12 +265,18 @@ def main():
     a = ap.parse_args()
 
     if a.update:
-        sys.exit(subprocess.call([sys.executable, "-m", "pip", "install", "-U", "yt-dlp", "imageio-ffmpeg"]))
+        sys.exit(subprocess.call([sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]", "imageio-ffmpeg"]))
 
     print(f"Library folder: {LIBRARY}\n")
     if not a.sync:
         items = expand_args(a.items) or read_items()
         if items:
+            global JS_RUNTIME
+            JS_RUNTIME = find_js_runtime()
+            if JS_RUNTIME is None and any(not Path(i.strip('"')).is_file() for i in items):
+                print("!! No JavaScript runtime found. YouTube downloads will fail with")
+                print("   'The page needs to be reloaded'. Run Setup.bat (installs Deno), then")
+                print("   open a NEW window.\n")
             process(items, find_ffmpeg())
     if a.no_sd:
         return

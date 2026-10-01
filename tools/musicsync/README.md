@@ -3,7 +3,9 @@
 Replaces the "YouTube -> converter site -> copy to SD" routine with one window.
 
 ## One-time setup (Windows)
-1. Double-click **Setup.bat**. It installs Python (if you don't have it), yt-dlp and ffmpeg.
+1. Double-click **Setup.bat**. It installs Python (if you don't have it), yt-dlp (with its YouTube solver), ffmpeg and
+   Deno. YouTube now requires a JavaScript runtime like Deno, or downloads fail with
+   "The page needs to be reloaded".
    If it installs Python, close it and run Setup.bat a second time.
 
 ## Everyday use
@@ -36,6 +38,10 @@ Other ways to use it:
 
 ## If downloads stop working
 YouTube changes often. Double-click **Update-ytdlp.bat**.
+
+**"The page needs to be reloaded"**: you're missing Deno (run Setup.bat, then open a *new*
+window) or yt-dlp is out of date. Don't add a `cookies.txt`. A logged-in session currently
+makes this error more likely, and the tool works without one.
 
 ## Notes
 - Only download music you have the right to use.

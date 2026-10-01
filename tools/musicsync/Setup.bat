@@ -12,7 +12,11 @@ exit /b
 
 :havepy
 where py >nul 2>nul && (set PY=py) || (set PY=python)
-%PY% -m pip install -U yt-dlp imageio-ffmpeg
+%PY% -m pip install -U "yt-dlp[default]" imageio-ffmpeg
+where deno >nul 2>nul || (
+  echo Installing Deno ^(YouTube needs a JavaScript runtime^)...
+  winget install -e --id DenoLand.Deno --accept-package-agreements --accept-source-agreements
+)
 echo.
 echo Done. Now double-click "CYD Music.bat".
 pause
