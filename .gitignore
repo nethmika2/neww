@@ -9,3 +9,8 @@ tools/hostcheck/build/
 tools/hostcheck/shots/
 tools/hostcheck/png/
 __pycache__/
+
+# YouTube login cookies for tools/musicsync - never commit
+cookies.txt
+**/cookies.txt
+.cydmusic.json

@@ -38,6 +38,7 @@ MAX_NAME = 48            # characters, keeps titles readable on the 320x240 scre
 LIBRARY = Path(os.environ.get("CYD_LIBRARY", Path.home() / "Music" / "CYD-Music"))
 CONFIG = Path.home() / ".cydmusic.json"
 JS_RUNTIME = None        # filled in by main()
+COOKIES = Path(os.environ.get("CYD_COOKIES", Path(__file__).resolve().parent / "cookies.txt"))
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav", ".wma", ".webm", ".mp4"}
 
 
@@ -134,26 +135,58 @@ def download(item, outdir, ffmpeg):
            "-o", str(outdir / "%(title).150B.%(ext)s")]
     if JS_RUNTIME:
         cmd += ["--js-runtimes", f"{JS_RUNTIME[0]}:{JS_RUNTIME[1]}"]
-    browser = load_config().get("browser")
-    if browser:
-        cmd += ["--cookies-from-browser", browser]
+    if COOKIES.is_file():
+        cmd += ["--cookies", str(COOKIES)]
+    else:
+        browser = load_config().get("browser")
+        if browser:
+            cmd += ["--cookies-from-browser", browser]
     return run_streaming(cmd)
 
 
-def ask_browser():
-    """YouTube wants a signed-in session. Ask which browser has one, remember it."""
-    print("\nYouTube is asking you to sign in (its bot check). yt-dlp can borrow the login from")
-    print("a browser where you're already signed in to YouTube. FIREFOX is the one that works")
-    print("reliably; Chrome/Edge usually fail (they lock/encrypt their cookies).")
-    print("Tip: use a spare Google account, not your main one - automated use can get flagged.")
-    print(f"Browsers: {', '.join(BROWSERS)}   (Enter = skip)")
-    b = input("Browser: ").strip().lower()
-    if b not in BROWSERS:
-        return None
-    cfg = load_config()
-    cfg["browser"] = b
-    save_config(cfg)
-    return b
+COOKIE_HELP = f"""
+YouTube is asking you to sign in (its bot check). Fix: give the tool a cookies.txt.
+Do it exactly like this, or the cookies go stale within minutes:
+  1. In Chrome/Edge install the extension "Get cookies.txt LOCALLY".
+     Tick "Allow in Incognito" for it (chrome://extensions > Details).
+  2. Open a NEW Incognito/InPrivate window and sign in to YouTube
+     (a spare Google account is wise; automated use can get an account flagged).
+  3. In that SAME tab go to  https://www.youtube.com/robots.txt
+     (it must be the only incognito tab open).
+  4. Click the extension > Export. Save the file as:
+       {COOKIES}
+  5. Close the incognito window. Don't open that session again.
+"""
+
+
+def ask_cookies():
+    """Bot wall hit: walk the user through cookies.txt (or a browser name). True = retry."""
+    print(COOKIE_HELP)
+    print("When the file is saved press Enter to retry. Or type a browser name "
+          f"({', '.join(BROWSERS)}) to read its login instead, or 'skip'.")
+    ans = input("> ").strip().lower()
+    if ans in BROWSERS:
+        cfg = load_config()
+        cfg["browser"] = ans
+        save_config(cfg)
+        return True
+    if ans == "skip":
+        return False
+    if not COOKIES.is_file():
+        print(f"   cookies.txt not found at {COOKIES}")
+        return False
+    return True
+
+
+def check_cookies():
+    """Catch the common cookies.txt mistakes before they waste a run."""
+    if not COOKIES.is_file():
+        return
+    head = COOKIES.read_text(errors="ignore")
+    if "youtube.com" not in head:
+        print(f"!! {COOKIES.name} has no youtube.com cookies - export again from youtube.com.")
+    elif "Netscape" not in head.splitlines()[0] and "HTTP Cookie" not in head[:200]:
+        print(f"!! {COOKIES.name} isn't in Netscape format (the extension's .txt export). Re-export it.")
 
 
 def convert_local(src, outdir, ffmpeg):
@@ -175,16 +208,19 @@ def process(items, ffmpeg, downloader=download):
                 ok = convert_local(p, tmp, ffmpeg)
             else:
                 ok = downloader(item, tmp, ffmpeg)
-                if not ok and LAST_BOT_WALL and not load_config().get("browser") and sys.stdin.isatty():
-                    if ask_browser():
+                if not ok and LAST_BOT_WALL and sys.stdin.isatty():
+                    if COOKIES.is_file():
+                        print("\nStill the bot check, so this cookies.txt has expired (or was exported from a normal tab).")
+                        if input("Delete it and set up a new one? [Y/n] ").strip().lower() != "n":
+                            COOKIES.unlink()
+                    if not COOKIES.is_file() and ask_cookies():
                         ok = downloader(item, tmp, ffmpeg)
             wavs = sorted(tmp.glob("*.wav"))
             if not ok and not wavs:
                 print("   !! failed.")
                 if LAST_BOT_WALL:
-                    print("      YouTube's bot check. Sign in to YouTube in FIREFOX, close Firefox, then run:")
-                    print("         python cydmusic.py --browser firefox")
-                    print("      (Chrome/Edge cookies usually can't be read.)")
+                    print("      YouTube's bot check: it needs a fresh cookies.txt. See README.md,")
+                    print(f"      section 'Sign in to confirm you're not a bot'  (save it as {COOKIES})")
                 else:
                     print("      'The page needs to be reloaded' -> run Update-ytdlp.bat and make sure")
                     print("      Setup.bat installed Deno. Other errors: check the link plays in a browser.")
@@ -336,7 +372,8 @@ def main():
             global JS_RUNTIME
             JS_RUNTIME = find_js_runtime()
             print(f"JavaScript runtime: {JS_RUNTIME[1] if JS_RUNTIME else 'NONE'}")
-            print(f"Browser login: {load_config().get('browser', 'none')}")
+            print(f"Login: {'cookies.txt' if COOKIES.is_file() else load_config().get('browser', 'none')}")
+            check_cookies()
             if JS_RUNTIME is None and any(not Path(i.strip('"')).is_file() for i in items):
                 print("!! No JavaScript runtime found. YouTube downloads will fail with")
                 print("   'The page needs to be reloaded'. Run Setup.bat (installs Deno), then")

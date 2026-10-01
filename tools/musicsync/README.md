@@ -42,14 +42,26 @@ YouTube changes often. Double-click **Update-ytdlp.bat**.
 **"The page needs to be reloaded"**: you're missing Deno (run Setup.bat, then open a *new*
 window) or yt-dlp is out of date.
 
-**"Sign in to confirm you're not a bot"**: YouTube's bot check on your connection. The tool
-asks which browser you're signed in to YouTube with, remembers it, and retries. Use **Firefox**:
-1. Sign in to YouTube in Firefox (a spare Google account is wise; automated use can get an account flagged).
-2. Close Firefox, then run `CYD Music.bat` again (or `python cydmusic.py --browser firefox` once).
+**"Sign in to confirm you're not a bot"**: YouTube's bot check on your connection. Fix it with a
+`cookies.txt`. The tool shows these steps itself and retries when you press Enter. YouTube
+rotates cookies on any tab that stays open, so the export has to be done like this or it stops
+working within minutes:
+1. In Chrome/Edge install the extension **Get cookies.txt LOCALLY**, then tick **Allow in
+   Incognito/InPrivate** for it (`chrome://extensions` > Details).
+2. Open a **new** Incognito/InPrivate window and sign in to YouTube. A spare Google account is
+   wise; automated downloading can get an account flagged.
+3. In that **same tab** go to `https://www.youtube.com/robots.txt`. It must be the only
+   private tab open.
+4. Click the extension > **Export**, and save the file as `cookies.txt` **in this folder**
+   (next to `cydmusic.py`).
+5. **Close the private window** and don't use that session again.
 
-Chrome and Edge usually fail: they lock and encrypt their cookies in a way yt-dlp can't read.
-Don't use an exported `cookies.txt`. It goes stale quickly, which was what caused
-"The page needs to be reloaded". `--browser none` turns the browser login off again.
+The tool uses `cookies.txt` automatically whenever it's there. When it expires, the tool tells
+you; delete the file and repeat the steps. `cookies.txt` is in `.gitignore`. It's a login, so
+never share or commit it.
+
+If you use Firefox, you can skip all that with `python cydmusic.py --browser firefox`.
+Chrome and Edge can't be read directly (they encrypt their cookies).
 
 ## Notes
 - Only download music you have the right to use.
