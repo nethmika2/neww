@@ -1430,7 +1430,6 @@ static void testLinkRecovery() {
   audioStateCallback(ESP_A2D_AUDIO_STATE_SUSPEND, nullptr);
   CHECK_EQ(audioStateNow(), (int)ESP_A2D_AUDIO_STATE_SUSPEND);
 
-  // A throttled, playing link gets rebuilt once - not on every call.
   audioRingBuffer = (uint8_t *)malloc(1024);
   memset(audioRingBuffer, 0, 1024);
   audioRingBytes = 1024;
@@ -1444,31 +1443,64 @@ static void testLinkRecovery() {
   hostSetMillisStep(0);
   audioStatsReset();
   audioLinkRecoveryReset();
+  hostMediaCtrlSuspendCount() = 0;
+  hostMediaCtrlStartCount() = 0;
 
-  // 4 KB/s for long enough that the verdict sees it (windows of 8 s, then the
-  // recovery needs LINK_BEHIND_MS of continuous degradation).
   Frame buf[128];
   unsigned long t = 0;
-  for (int win = 0; win < 4; win++) {
-    t += 8000;
-    hostSetMillis(t);
-    for (int i = 0; i < 8; i++) get_audio_data(buf, 128);   // 4 KB per 8 s
-    audioLogStatsIfDue();                                   // drives the verdict
-  }
+  // Feed a trickle for 32 s: the verdict accumulates "behind" as it goes.
+  auto starveWindow = [&](unsigned long ms) {
+    unsigned long end = t + ms;
+    while (t + 8000 <= end) {
+      t += 8000;
+      hostSetMillis(t);
+      for (int i = 0; i < 8; i++) get_audio_data(buf, 128);   // 4 KB per 8 s
+      audioLogStatsIfDue();
+    }
+  };
+  starveWindow(32000);
   CHECK(audioLinkBehind());
   CHECK(audioLinkBehindMs() >= LINK_BEHIND_MS);
+
+  // Stage 1: a media-level restart, which does NOT drop the Bluetooth link.
+  CHECK(audioLinkRecoveryService());
+  CHECK_EQ(hostMediaCtrlSuspendCount(), 1);
+  CHECK_EQ(hostMediaCtrlStartCount(), 1);
+  CHECK_EQ(a2dp_source.endCount, 0);            // no disconnect yet
+  CHECK_EQ(audioLinkBehindMs(), 0UL);           // judged afresh from here
+
+  // The link is still throttled, so the second gentle attempt goes next.
+  starveWindow(32000);
+  t += LINK_RECOVER_GAP_MS;
+  hostSetMillis(t);
+  CHECK(audioLinkRecoveryService());
+  CHECK_EQ(hostMediaCtrlSuspendCount(), 2);
+  CHECK_EQ(a2dp_source.endCount, 0);
+
+  // Two gentle attempts done: the next action is the full session rebuild.
+  starveWindow(32000);
+  t += LINK_RECOVER_GAP_MS;
+  hostSetMillis(t);
   CHECK(audioLinkRecoveryService());
   CHECK_EQ(a2dp_source.endCount, 1);
   CHECK_EQ(a2dp_source.startCount, 1);
-  // Immediately afterwards the gap has not elapsed: no second rebuild.
-  CHECK(!audioLinkRecoveryService());
-  CHECK_EQ(a2dp_source.endCount, 1);
+  CHECK_EQ(audioLinkRebuildCount(), 1);
 
-  // A link that is keeping up is never rebuilt.
+  // Rebuilds are rare and capped, whatever the link does.
+  for (int i = 0; i < 6; i++) {
+    starveWindow(32000);
+    t += LINK_RECOVER_GAP_MS + LINK_REBUILD_GAP_MS;
+    hostSetMillis(t);
+    audioLinkRecoveryService();
+  }
+  CHECK(audioLinkRebuildCount() <= LINK_MAX_REBUILDS);
+
+  // A link that keeps up is never acted on.
+  audioLinkRecoveryReset();
+  hostMediaCtrlSuspendCount() = 0;
+  a2dp_source.endCount = 0;
   audioStatsReset();
-  t += 1000;
-  hostSetMillis(t);
-  for (int win = 0; win < 3; win++) {
+  for (int win = 0; win < 5; win++) {
     for (int i = 0; i < 344 * 8; i++) get_audio_data(buf, 128);   // real time
     t += 8000;
     hostSetMillis(t);
@@ -1476,12 +1508,13 @@ static void testLinkRecovery() {
   }
   CHECK(!audioLinkBehind());
   CHECK(!audioLinkRecoveryService());
-  CHECK_EQ(a2dp_source.endCount, 1);
+  CHECK_EQ(hostMediaCtrlSuspendCount(), 0);
+  CHECK_EQ(a2dp_source.endCount, 0);
 
   // Not while paused either: nothing is being streamed, so nothing is behind.
   isPlaying = false;
   CHECK(!audioLinkRecoveryService());
-  CHECK_EQ(a2dp_source.endCount, 1);
+  CHECK_EQ(a2dp_source.endCount, 0);
 
   free(audioRingBuffer);
   audioRingBuffer = nullptr;

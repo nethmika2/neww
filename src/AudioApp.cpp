@@ -35,6 +35,7 @@ static volatile uint32_t stBytesFed = 0;
 static volatile uint32_t stOutBytes = 0;    // cumulative, never reset by logging
 static volatile uint32_t stOutCalls = 0;
 static unsigned long stLogBytes = 0;        // snapshot the log line measures from
+static unsigned long stLogCalls = 0;
 static unsigned long stLogAt = 0;
 // The "is the link keeping up" verdict has its own window.  It used to share the
 // telemetry window, which meant every report reset it - so a link that was
@@ -104,6 +105,14 @@ static void audioLinkVerdictUpdate() {
 
 unsigned long audioLinkBehindMs() { return stBehindMs; }
 
+// Forgets the accumulated degradation, so a recovery action can be judged on
+// what happens next rather than on the history that triggered it.
+void audioLinkVerdictClear() {
+  stBehindMs = 0;
+  stLinkBytes = stOutBytes;
+  stLinkAt = millis();
+}
+
 // True while the stack is pulling well under real time: the A2DP transmit queue
 // is backed up, which means the air link cannot drain it.  The earbuds starve in
 // cycles when this lasts, and it is not something the app can feed its way out
@@ -117,6 +126,7 @@ void audioStatsReset() {
   stOutBytes = 0;
   stOutCalls = 0;
   stLogBytes = 0;
+  stLogCalls = 0;
   stLogAt = millis();
   stLinkBytes = 0;
   stLinkAt = millis();
@@ -148,9 +158,12 @@ void audioLogStats(const char* why) {
   if (audioRingBuffer && audioRingBytes > 0) fill = (getRingBufferAvailableRead() * 100) / audioRingBytes;
   // "out" is what the Bluetooth stack took; "fed" is what the SD side delivered.
   // A stutter with out < ~170 KB/s is the link, with out healthy it is not.
+  // The calls figure has to be a delta too: the counter is cumulative, and
+  // dividing it by the window made it climb without bound ("1698 calls/s").
+  uint32_t callsKbps = (uint32_t)((stOutCalls - stLogCalls) * 1000UL / (dt ? dt : 1));
   Serial.printf("[I][audio] %s: out %lu KB/s (%lu calls/s), fed %lu KB/s, ring %d%%, starve %lu (%lu ms silence), behind %lu s, state %d\n",
                 why, (unsigned long)audioOutKBps(),
-                (unsigned long)(stOutCalls * 1000UL / (dt ? dt : 1)),
+                (unsigned long)callsKbps,
                 (unsigned long)fedKbps, fill,
                 (unsigned long)stStarve, (unsigned long)(stSilenceBytes / 176),
                 (unsigned long)(stBehindMs / 1000),
@@ -158,6 +171,7 @@ void audioLogStats(const char* why) {
   stLastLog = now;
   stLastLogBytes = fed;
   stLogBytes = stOutBytes;
+  stLogCalls = stOutCalls;
   stLogAt = now;
 }
 
@@ -767,34 +781,68 @@ void handleMusicListTouch(bool touched, int sx, int sy) {
 // ==========================================
 // LINK RECOVERY
 // ==========================================
-// The report from hardware is specific: the first stream of a session runs at
-// full rate (~172 KB/s out, 325 kbps of SBC) and later the same link only
-// delivers ~116 KB/s - the A2DP transmit queue backs up, the stack throttles
-// itself, and the earbuds starve in a cycle.  The bitpool that sets the air rate
-// is negotiated inside Bluedroid (from the sink's capabilities, capped at 53)
-// and no library call can lower it, so the one action left in firmware is to
-// rebuild the stream: a fresh stream is exactly the state the user reports as
-// good.  Gated hard - only while actually playing, only after the link has been
-// behind for LINK_BEHIND_MS, and at most once per LINK_RESTART_GAP_MS.
-static unsigned long linkLastRestart = 0;
+// The report from hardware is specific: a fresh stream runs at full rate
+// (~172 KiB/s out, 325 kbps of SBC) and later the same link only delivers
+// ~116 KiB/s, with the transmit queue full and the stack throttled.  The bitpool
+// that sets the air rate is negotiated inside Bluedroid and cannot be lowered
+// from here, so the lever we have is to start the stream again - which is
+// exactly the state the user reports as good.
+//
+// Two stages, cheapest first:
+//   1. media-level restart: esp_a2d_media_ctrl(SUSPEND) then (START) - the
+//      Bluetooth link stays up and only the audio stream is rebuilt, which
+//      flushes the sink's jitter buffer and drains the backed-up queue.
+//   2. session rebuild: a2dp end/start - effective, but the earbuds see a
+//      disconnect and reconnect, so it is rare and capped per boot.
+static unsigned long linkLastAction = 0;
+static unsigned long linkLastRebuild = 0;
+static int linkGentleAttempts = 0;
+static int linkRebuilds = 0;
 
 void audioLinkRecoveryReset() {
-  linkLastRestart = 0;
-  stBehindMs = 0;
-  stLinkBytes = stOutBytes;
-  stLinkAt = millis();
+  linkLastAction = 0;
+  linkLastRebuild = 0;
+  linkGentleAttempts = 0;
+  linkRebuilds = 0;
+  audioLinkVerdictClear();
 }
 
-bool audioLinkRecoveryService() {
-  unsigned long& lastRestart = linkLastRestart;
-  if (audioLinkBehindMs() < LINK_BEHIND_MS) return false;
-  unsigned long now = millis();
-  if (lastRestart != 0 && now - lastRestart < LINK_RESTART_GAP_MS) return false;
+int audioLinkRebuildCount() { return linkRebuilds; }
 
-  Serial.printf("[I][bt] link behind %lu s (out %lu KB/s), rebuilding the stream\n",
-                (unsigned long)(audioLinkBehindMs() / 1000), (unsigned long)audioOutKBps());
-  // Flush what is queued and start over; the library reconnects to the earbuds
-  // it was last paired with.
+bool audioLinkRecoveryService() {
+  if (audioLinkBehindMs() < LINK_BEHIND_MS) {
+    // The link is keeping up again: forget the attempts made so far.
+    linkGentleAttempts = 0;
+    return false;
+  }
+  unsigned long now = millis();
+  // Never act on a stream that is already recovering: a higher rate after the
+  // last action means it worked.
+  if (linkLastAction != 0 && now - linkLastAction < LINK_RECOVER_GAP_MS) return false;
+
+  if (linkGentleAttempts < 2) {
+    linkGentleAttempts++;
+    linkLastAction = now;
+    Serial.printf("[I][bt] link behind %lu s (out %lu KB/s), restarting the stream\n",
+                  (unsigned long)(audioLinkBehindMs() / 1000), (unsigned long)audioOutKBps());
+    esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_SUSPEND);
+    delay(400);
+    esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_START);
+    audioLinkVerdictClear();     // judge the result on the next window
+    return true;
+  }
+
+  // Two media restarts did not hold.  Rebuild the session - but rarely, and only
+  // a few times per boot: each one is a disconnect the user hears.
+  if (linkRebuilds >= LINK_MAX_REBUILDS) return false;
+  if (linkLastRebuild != 0 && now - linkLastRebuild < LINK_REBUILD_GAP_MS) return false;
+  linkRebuilds++;
+  linkGentleAttempts = 0;
+  linkLastAction = now;
+  linkLastRebuild = now;
+  Serial.printf("[I][bt] link behind %lu s (out %lu KB/s), rebuilding the session (%d/%d)\n",
+                (unsigned long)(audioLinkBehindMs() / 1000), (unsigned long)audioOutKBps(),
+                linkRebuilds, LINK_MAX_REBUILDS);
   a2dp_source.end();
   delay(300);
   a2dp_source.start(EARBUD_NAME, get_audio_data);
@@ -802,7 +850,7 @@ bool audioLinkRecoveryService() {
   a2dp_source.set_volume(127);
   esp_bt_sleep_disable();
   audioStatsReset();
-  lastRestart = millis();
-  Serial.printf("[I][bt] stream restarted, free heap %u\n", (unsigned)ESP.getFreeHeap());
+  audioLinkVerdictClear();
+  Serial.printf("[I][bt] session rebuilt, free heap %u\n", (unsigned)ESP.getFreeHeap());
   return true;
 }

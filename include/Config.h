@@ -62,7 +62,7 @@
 
 // Wi-Fi & NTP Configuration
 // Printed on every boot so a serial log says which build is on the device.
-static const char* const FW_BUILD = "2026-10-02a (recovery actually fires)";
+static const char* const FW_BUILD = "2026-10-02b (gentle stream restart)";
 
 static const char* const WIFI_SSID = "Dialog 4G New";
 static const char* const WIFI_PASS = "tgrd-0241320-";
@@ -143,7 +143,12 @@ static const char* const NTP_3 = "pool.ntp.org";
 // often it may do so.  A rebuild costs a couple of seconds of silence, so it is
 // only worth it for a link that is not coming back on its own.
 #define LINK_BEHIND_MS 20000UL
-#define LINK_RESTART_GAP_MS 90000UL
+// Stage 1 restarts the stream at the media level (no Bluetooth disconnect, about
+// a second of silence).  Stage 2 rebuilds the whole A2DP session, which the user
+// sees as a disconnect, so it is rare and capped.
+#define LINK_RECOVER_GAP_MS 30000UL     // between any two recovery actions
+#define LINK_REBUILD_GAP_MS 180000UL    // between full session rebuilds
+#define LINK_MAX_REBUILDS 3             // per boot
 
 #define SCREEN_TIMEOUT_MS 60000UL
 #define SAVER_OFF_MS 600000UL

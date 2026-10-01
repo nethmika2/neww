@@ -21,6 +21,30 @@ typedef enum {
   ESP_A2D_AUDIO_STATE_SUSPEND = 3
 } esp_a2d_audio_state_t;
 
+// AVDTP media control (esp_a2d_api.h in the real SDK): the app uses it to
+// restart the stream without dropping the Bluetooth link.
+typedef enum {
+  ESP_A2D_MEDIA_CTRL_NONE = 0,
+  ESP_A2D_MEDIA_CTRL_CHECK_SRC_RDY,
+  ESP_A2D_MEDIA_CTRL_START,
+  ESP_A2D_MEDIA_CTRL_SUSPEND,
+  ESP_A2D_MEDIA_CTRL_STOP
+} esp_a2d_media_ctrl_t;
+
+inline int &hostMediaCtrlSuspendCount() {
+  static int n = 0;
+  return n;
+}
+inline int &hostMediaCtrlStartCount() {
+  static int n = 0;
+  return n;
+}
+inline esp_err_t esp_a2d_media_ctrl(esp_a2d_media_ctrl_t cmd) {
+  if (cmd == ESP_A2D_MEDIA_CTRL_SUSPEND) hostMediaCtrlSuspendCount()++;
+  if (cmd == ESP_A2D_MEDIA_CTRL_START) hostMediaCtrlStartCount()++;
+  return ESP_OK;
+}
+
 class A2DPVolumeControl {
  public:
   int volume = 50;

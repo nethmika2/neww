@@ -33,7 +33,9 @@ bool audioLinkBehind();        // the stack has been pulling under real time
 unsigned long audioLinkBehindMs();  // for how long, continuously
 int audioStateNow();           // last A2DP audio state the stack reported (-1 = none)
 void audioStateCallback(esp_a2d_audio_state_t state, void*);   // register before start()
-bool audioLinkRecoveryService();   // rebuilds a throttled stream (see the .cpp)
+void audioLinkVerdictClear();      // forget the accumulated "behind" time
+bool audioLinkRecoveryService();   // restarts a throttled stream (see the .cpp)
+int audioLinkRebuildCount();       // full session rebuilds since boot
 void audioStatsReset();
 void audioLogStats(const char* why);
 void audioLogStatsIfDue();

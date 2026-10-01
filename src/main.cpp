@@ -121,7 +121,21 @@ void setup() {
 // MAIN LOOP & EVENT DISPATCH
 // ==========================================
 void loop() {
-  if (btInitialized) btConnected = a2dp_source.is_connected();
+  if (btInitialized) {
+    bool wasConnected = btConnected;
+    btConnected = a2dp_source.is_connected();
+    // A transition here is either the earbuds dropping the link or one of our
+    // own session rebuilds; the message names it so the two cannot be confused.
+    if (btConnected != wasConnected) {
+      if (btConnected) {
+        Serial.printf("[I][bt] link up at %lu ms (free heap %u)\n",
+                      millis(), (unsigned)ESP.getFreeHeap());
+      } else {
+        Serial.printf("[I][bt] link down at %lu ms (free heap %u)\n",
+                      millis(), (unsigned)ESP.getFreeHeap());
+      }
+    }
+  }
   audioRingService();
 
   // Stream state changes are the other half of a stutter report: if the sink
