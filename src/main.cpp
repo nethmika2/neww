@@ -1,9 +1,11 @@
 #include <Arduino.h>
+#include <esp_log.h>
 #include "Config.h"
 #include "Types.h"
 #include "Globals.h"
 #include "TouchDriver.h"
 #include "DisplayUtils.h"
+#include "Led.h"
 #include "Storage.h"
 #include "TimeService.h"
 #include "AudioApp.h"
@@ -11,6 +13,9 @@
 #include "GraphApp.h"
 #include "KeyboardApp.h"
 #include "PomodoroApp.h"
+#include "PomodoroStore.h"
+#include "TextInput.h"
+#include "EarbudControls.h"
 #include "SettingsApp.h"
 #include "CalibrationApp.h"
 #include "HomeApp.h"
@@ -20,8 +25,21 @@
 // ==========================================
 void setup() {
   Serial.begin(115200);
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
+  delay(50);
+  // First line of every boot: how much RAM the firmware left itself.  A number
+  // far below ~200 KB is what slows the Bluetooth start down later.
+  // The Bluetooth stack reports link trouble through its own logger, once per
+  // 30 ms tick while the A2DP transmit queue is backed up ("Limit frms to send
+  // ..."), which turns the serial monitor into a firehose exactly when the
+  // audio stutters.  Our own lines are plain Serial.printf and stay.
+  esp_log_level_set("*", ESP_LOG_ERROR);
+  Serial.printf("[I][boot] %s, free heap %u\n", FW_BUILD, (unsigned)ESP.getFreeHeap());
+  // Backlight and the on-board RGB LED share the PWM setup: the backlight is
+  // dimmable for the DIM idle mode, and the LED is the load that keeps a power
+  // bank awake when the screen is dark.
+  pwmBegin(TFT_BL, TFT_BL_CH);
+  setBacklight(TFT_BL_FULL_DUTY);
+  statusLedBegin();
   displaySPI.begin(TFT_CLK, TFT_MISO, TFT_MOSI, TFT_CS);
   tft.begin();
   tft.setRotation(1);
@@ -33,7 +51,35 @@ void setup() {
   touch_x_max = prefs.getInt("x_max", 3800);
   touch_y_min = prefs.getInt("y_min", 200);
   touch_y_max = prefs.getInt("y_max", 3800);
-  screensaverEnabled = prefs.getBool("screensaver", true);
+  // A 4 point calibration (when one has been stored) takes over from the
+  // min/max axis mapping, which stays as the fallback for older devices.
+  loadTouchCalibration();
+  {
+    int c = prefs.getInt("ledcolor", LED_C_VIOLET);
+    int e = prefs.getInt("ledeffect", LED_E_FADE);
+    int l = prefs.getInt("ledlevel", LED_L_MED);
+    ledColor = (LedColor)constrain(c, 0, LED_C_COUNT - 1);
+    ledEffect = (LedEffect)constrain(e, 0, LED_E_COUNT - 1);
+    ledLevel = (LedLevel)constrain(l, 0, LED_L_COUNT - 1);
+    // Older builds had a plain on/off for "follow the apps"; it maps onto the
+    // three show modes, so an existing setting is kept.
+    if (prefs.isKey("ledshow")) {
+      int sh = prefs.getInt("ledshow", LED_S_APPS);
+      ledShow = (LedShow)constrain(sh, 0, LED_S_COUNT - 1);
+    } else {
+      ledShow = prefs.getBool("ledfollow", true) ? LED_S_APPS : LED_S_DARK;
+    }
+    ledInvert = prefs.getBool("ledinvert", false);
+  }
+
+  // Older builds stored a plain on/off for the idle screensaver; it maps onto
+  // the three idle modes, so an existing setting is not lost.
+  if (prefs.isKey("idlemode")) {
+    int m = prefs.getInt("idlemode", IDLE_CLOCK);
+    idleMode = (m == IDLE_DIM) ? IDLE_DIM : (m == IDLE_DARK) ? IDLE_DARK : IDLE_CLOCK;
+  } else {
+    idleMode = prefs.getBool("screensaver", true) ? IDLE_CLOCK : IDLE_DARK;
+  }
   autoSyncBoot = prefs.getBool("autosync", true);
   xAxisPi = prefs.getBool("xpi", false);
   yAxisPi = prefs.getBool("ypi", false);
@@ -47,7 +93,11 @@ void setup() {
 
   for (int i = 0; i < NUM_FUNCS; i++)
     for (int j = 0; j <= 320; j++) prev_y[i][j] = -1000;
+  for (int i = 0; i < MAX_POINTS; i++) old_ptsx[i] = old_ptsy[i] = -1000;
   loadFunctions();
+  loadPomoStore();
+  pomoApplyMode(MODE_WORK);
+  pomoLoadTimerState();  // resume a session that a reboot interrupted (paused)
   loadPoints();
   loadVariables();
   for (int i = 0; i < NUM_FUNCS; i++) compileSlot(i);
@@ -71,10 +121,42 @@ void setup() {
 // MAIN LOOP & EVENT DISPATCH
 // ==========================================
 void loop() {
-  if (btInitialized) btConnected = a2dp_source.is_connected();
+  if (btInitialized) {
+    bool wasConnected = btConnected;
+    btConnected = a2dp_source.is_connected();
+    // A transition here is either the earbuds dropping the link or one of our
+    // own session rebuilds; the message names it so the two cannot be confused.
+    if (btConnected != wasConnected) {
+      if (btConnected) {
+        Serial.printf("[I][bt] link up at %lu ms (free heap %u)\n",
+                      millis(), (unsigned)ESP.getFreeHeap());
+      } else {
+        Serial.printf("[I][bt] link down at %lu ms (free heap %u)\n",
+                      millis(), (unsigned)ESP.getFreeHeap());
+      }
+    }
+  }
+  audioRingService();
+
+  // Stream state changes are the other half of a stutter report: if the sink
+  // suspends and restarts the stream, it shows up here; if the state stays
+  // STARTED (2) while the audio drops out, the loss is in the air, not in the
+  // app.  This now reads a state that a callback actually maintains.
+  if (btInitialized) {
+    static int lastStreamState = -2;
+    int streamState = audioStateNow();
+    if (streamState != lastStreamState) {
+      lastStreamState = streamState;
+      Serial.printf("[I][bt] stream state %d at %lu ms\n", streamState, millis());
+    }
+  }
+  audioLinkRecoveryService();
+  // Earbud buttons are queued from the Bluetooth task and applied here.
+  earbudControlsPoll();
 
   if (trackFinished) {
     trackFinished = false;
+    Serial.printf("[I][audio] track finished\n");
     if (numTracks > 0) {
       currentTrack = (currentTrack + 1) % numTracks;
       playTrack(currentTrack);
@@ -95,44 +177,16 @@ void loop() {
     drawMusicScreen(false);
   }
 
-  if (pomoRunning && millis() - lastPomoTick >= 1000) {
-    lastPomoTick += 1000;
-    if (pomoSeconds > 0) pomoSeconds--;
-    else {
-      pomoRunning = false;
-      setScreenPower(true);
-      if (pomoMode == MODE_WORK) {
-        pomodorosCompleted++;
-        if (pomodorosCompleted >= POMOS_BEFORE_LONG) {
-          pomoMode = MODE_LONG_BREAK;
-          pomoSeconds = LONG_BREAK_TIME;
-          pomodorosCompleted = 0;
-        } else {
-          pomoMode = MODE_SHORT_BREAK;
-          pomoSeconds = SHORT_BREAK_TIME;
-        }
-      } else {
-        pomoMode = MODE_WORK;
-        pomoSeconds = WORK_TIME;
-      }
-      if (currentState == STATE_POMODORO) drawPomodoroScreen(true);
-    }
-    if (currentState == STATE_POMODORO && displayActive()) drawPomodoroScreen(false);
-  }
+  // One [I][audio] line every few seconds while a track plays: it separates a
+  // slow card from a starved Bluetooth link when a stutter is reported.
+  audioLogStatsIfDue();
 
-  if (screensaverActive && millis() - lastSaverTick > 1000) {
-    lastSaverTick = millis();
-    updateScreensaver();
-  }
-  if (currentState != STATE_CALIBRATE) {
-    unsigned long idle = millis() - lastActivityTime;
-    if (displayActive() && idle > SCREEN_TIMEOUT_MS) setScreenPower(false);
-    else if (screensaverActive && !pomoRunning && idle > SCREEN_TIMEOUT_MS + SAVER_OFF_MS) {
-      digitalWrite(TFT_BL, LOW);
-      screenOn = false;
-      screensaverActive = false;
-    }
-  }
+  pomoTick();
+
+  updateScreensaver();
+
+  updateIdleScreen();
+  updateStatusLed();
 
   bool touched = ts.touched();
   TS_Point p;
@@ -146,17 +200,10 @@ void loop() {
     }
   }
 
-  if (currentState == STATE_CALIBRATE) {
-    handleCalibrationTouch(touched, p);
-    delay(2);
-    return;
-  }
-
   int sx = -1, sy = -1;
   if (touched) {
-    int hw_x = touch_swap_xy ? p.y : p.x, hw_y = touch_swap_xy ? p.x : p.y;
-    int raw_sx = map(hw_x, touch_x_min, touch_x_max, 0, 320);
-    int raw_sy = map(hw_y, touch_y_min, touch_y_max, 0, 240);
+    int raw_sx = 0, raw_sy = 0;
+    applyTouchCalibration(p, raw_sx, raw_sy);
 
     // Snap instantly for taps or fast movements, smooth only for slow panning
     if (smoothed_x == -1 || abs(raw_sx - smoothed_x) > 25 || abs(raw_sy - smoothed_y) > 25) {
@@ -172,6 +219,14 @@ void loop() {
     smoothed_x = -1;
   }
 
+  // Calibration runs after the mapping so it can still see where the panel
+  // thinks the touch landed (used for its cancel button).
+  if (currentState == STATE_CALIBRATE) {
+    handleCalibrationTouch(touched, p, sx, sy);
+    delay(2);
+    return;
+  }
+
   // Slider playback runs ahead of touch dispatch so a finger-down frame
   // never fights the animation for the screen.
   if (currentState == STATE_GRAPH && varPanelOpen && varAnimating && !touched && displayActive()) {
@@ -185,6 +240,7 @@ void loop() {
   else if (currentState == STATE_MUSIC_LIST) handleMusicListTouch(touched, sx, sy);
   else if (currentState == STATE_POMODORO) handlePomodoroTouch(touched, sx, sy);
   else if (currentState == STATE_POINT_KBD) handlePointKeyboardTouch(touched, sx, sy);
+  else if (currentState == STATE_TEXT_KBD) handleTextKeyboardTouch(touched, sx, sy);
   else handleKeyboardTouch(touched, sx, sy);
 
   delay(2);

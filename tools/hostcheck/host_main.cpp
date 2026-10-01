@@ -1,0 +1,2222 @@
+// ---------------------------------------------------------------------------
+// Host side test suite.  Compiles the real firmware sources against the stubs
+// and drives the parts that do not need a panel: the data layer, the phase
+// flow, the countdown arithmetic, the point keyboard, the touch calibration and
+// the earbud (AVRCP) handling.
+// ---------------------------------------------------------------------------
+#include <cstdio>
+#include <cstring>
+#include <unistd.h>
+#include <sys/time.h>
+#include <stdlib.h>
+#include <time.h>
+#include <cmath>
+#include <string>
+#include "esp_bt.h"
+#include <vector>
+#include <functional>
+
+#include "Arduino.h"
+#include "Adafruit_GFX.h"
+#include "HostDraw.h"
+#include "SD.h"
+#include "Preferences.h"
+#include "Globals.h"
+#include "Config.h"
+#include "Types.h"
+#include "DisplayUtils.h"
+#include "Led.h"
+#include "PomodoroApp.h"
+#include "PomodoroStore.h"
+#include "KeyboardApp.h"
+#include "HomeApp.h"
+#include "GraphApp.h"
+#include "SettingsApp.h"
+#include "TextInput.h"
+#include "TouchDriver.h"
+#include "CalibrationApp.h"
+#include "EarbudControls.h"
+#include "AudioApp.h"
+#include "TimeService.h"
+#include "WiFi.h"
+#include "MathEngine.h"
+#include "Storage.h"
+#include "esp_avrc_api.h"
+#include "BluetoothA2DPSource.h"
+
+// harness hooks provided by stubs.cpp
+void hostSetMillis(unsigned long v);
+void hostSetMillisStep(unsigned long v);
+unsigned long hostAdvanceMillis(unsigned long by);
+unsigned long hostMillisValue();          // reads the clock without advancing it
+void hostSetClock(time_t t);              // sets the RTC the firmware reads (negative = real clock)
+void hostInjectTouch(bool down, int rawX, int rawY);   // simulated finger (raw panel values)
+esp_err_t hostAvrcRnCapHas(esp_avrc_rn_event_ids_t e);
+void hostAvrcReset();
+void hostMakeWav(const char *path, int seconds, int freq, uint32_t sampleRate);
+void hostMakeFile(const char *path, const char *text);
+void hostSetNameBaseOnly(bool v);
+std::string &hostHttpResponse();
+std::string &hostHttpRequest();
+esp_err_t hostWifiStopCount();       // how many times the firmware stopped the radio
+
+static int failures = 0;
+static int checks = 0;
+static const char *currentSuite = "";
+
+#define CHECK(cond)                                                       \
+  do {                                                                    \
+    checks++;                                                             \
+    if (!(cond)) {                                                        \
+      failures++;                                                         \
+      printf("  FAIL [%s] %s:%d  %s\n", currentSuite, __FILE__, __LINE__, #cond); \
+    }                                                                     \
+  } while (0)
+
+#define CHECK_EQ(a, b)                                                          \
+  do {                                                                          \
+    checks++;                                                                   \
+    auto va = (a);                                                              \
+    auto vb = (b);                                                              \
+    if (!(va == vb)) {                                                          \
+      failures++;                                                               \
+      printf("  FAIL [%s] %s:%d  %s == %s  (%ld vs %ld)\n", currentSuite, __FILE__, __LINE__, #a, #b, (long)va, (long)vb); \
+    }                                                                           \
+  } while (0)
+
+#define SUITE(name)                 \
+  do {                              \
+    currentSuite = name;            \
+    printf("- %s\n", name);         \
+  } while (0)
+
+// ===========================================================================
+// helpers
+// ===========================================================================
+static void resetPomodoroState() {
+  Preferences::resetAll();
+  // Assignments, not memset: the task and template structs own String members.
+  for (int i = 0; i < MAX_POMO_TASKS; i++) pomoTasks[i] = PomoTask();
+  for (int i = 0; i < MAX_POMO_TEMPLATES; i++) pomoTemplates[i] = PomoTemplate();
+  for (int i = 0; i < POMO_HISTORY_DAYS; i++) pomoHistory[i] = PomoDayStat();
+  pomoHistoryCount = 0;
+  pomoActiveTask = -1;
+  pomoDailyGoal = DEFAULT_DAILY_GOAL;
+  pomoWorkTime = DEFAULT_WORK_TIME;
+  pomoShortTime = DEFAULT_SHORT_BREAK;
+  pomoLongTime = DEFAULT_LONG_BREAK;
+  pomoLongEvery = DEFAULT_CYCLES_BEFORE_LONG;
+  pomodorosCompleted = 0;
+  pomoAutoStart = false;
+  pomoScrollReset();
+  pomoView = POMO_VIEW_TIMER;
+  statsTab = STATS_DAY;
+  statsTab = STATS_DAY;
+  currentState = STATE_POMODORO;
+  setScreenPower(true);
+  hostSetMillisStep(250);
+  hostSetMillis(100000);
+}
+
+// ===========================================================================
+// countdown arithmetic
+// ===========================================================================
+static void testCountdown() {
+  SUITE("countdown");
+  resetPomodoroState();
+  hostSetMillisStep(0);
+  hostSetMillis(500000);
+
+  pomoApplyMode(MODE_WORK);
+  CHECK_EQ(pomoSeconds, pomoWorkTime);
+  CHECK_EQ(pomoPhaseTotal, pomoWorkTime);
+  CHECK(pomoDeadlineMs == 500000UL + (unsigned long)pomoWorkTime * 1000UL);
+
+  // Start the phase; the deadline is anchored to "now".
+  pomoRunning = true;
+  pomoStartTiming();
+  CHECK(pomoDeadlineMs == 500000UL + (unsigned long)pomoWorkTime * 1000UL);
+
+  // Ten seconds later the timer shows ten seconds less.
+  hostSetMillis(510000);
+  pomoTick();
+  CHECK_EQ(pomoSeconds, pomoWorkTime - 10);
+
+  // A long stall (a slow redraw, a blocked SD read) must not lose time: the
+  // displayed value jumps to what the clock says instead of one second per pass.
+  hostSetMillis(510000 + 30000);
+  pomoTick();
+  CHECK_EQ(pomoSeconds, pomoWorkTime - 40);
+
+  // Pausing freezes the remaining time, and resuming continues from it.
+  pomoPauseTiming();          // the UI pauses first ...
+  pomoRunning = false;        // ... and then flips the flag
+  int frozen = pomoSeconds;
+  hostSetMillis(570000);
+  pomoTick();
+  CHECK_EQ(pomoSeconds, frozen);
+  hostSetMillis(575000);
+  pomoRunning = true;
+  pomoStartTiming();          // resumes from the frozen value
+  CHECK(pomoDeadlineMs == 575000UL + (unsigned long)frozen * 1000UL);
+  hostSetMillis(580000);
+  pomoTick();
+  CHECK_EQ(pomoSeconds, frozen - 5);
+
+  // Sub-second remainders round up: the last second is shown as 1, not 0.
+  hostSetMillis(pomoDeadlineMs - 400);
+  pomoTick();
+  CHECK_EQ(pomoSeconds, 1);
+
+  // Reaching zero completes the phase and credits a full work block.
+  hostSetMillis(pomoDeadlineMs + 10);
+  int blocksBefore = pomoStatBlocks(pomoTodayDay());
+  pomoTick();
+  CHECK_EQ(pomoSeconds, pomoPhaseTotal);
+  CHECK_EQ(pomoMode, MODE_SHORT_BREAK);
+  CHECK_EQ(pomoStatBlocks(pomoTodayDay()), blocksBefore + 1);
+  CHECK(!pomoRunning);
+
+  // +5 minutes lands in the deadline while the timer runs.
+  hostSetMillisStep(0);
+  hostSetMillis(2000000);
+  pomoApplyMode(MODE_WORK);
+  pomoRunning = true;
+  pomoStartTiming();
+  unsigned long beforeDeadline = pomoDeadlineMs;
+  int beforeTotal = pomoPhaseTotal;
+  pomoExtendPhase(300);
+  CHECK(pomoDeadlineMs == beforeDeadline + 300000UL);
+  CHECK_EQ(pomoPhaseTotal, beforeTotal + 300);
+  hostSetMillis(2000000 + 1000);
+  pomoTick();
+  CHECK_EQ(pomoSeconds, beforeTotal + 300 - 1);
+}
+
+// ===========================================================================
+// task list: estimate stepper, focus, done, clearing
+// ===========================================================================
+static void testTaskList() {
+  SUITE("task list");
+  resetPomodoroState();
+
+  int a = addPomoTask("Write report");
+  int b = addPomoTask("Email");
+  CHECK(a >= 0);
+  CHECK(b >= 0);
+  CHECK_EQ(pomoTasks[a].target, 1);
+
+  // The estimate must go up *and* down again (the old stepper only cycled up).
+  adjustPomoTaskTarget(a, 1);
+  CHECK_EQ(pomoTasks[a].target, 2);
+  adjustPomoTaskTarget(a, 1);
+  adjustPomoTaskTarget(a, 1);
+  CHECK_EQ(pomoTasks[a].target, 4);
+  adjustPomoTaskTarget(a, -1);
+  CHECK_EQ(pomoTasks[a].target, 3);
+
+  // It never falls below one block.
+  for (int i = 0; i < 8; i++) adjustPomoTaskTarget(a, -1);
+  CHECK_EQ(pomoTasks[a].target, 1);
+
+  // ... nor above the maximum.
+  for (int i = 0; i < 40; i++) adjustPomoTaskTarget(a, 1);
+  CHECK_EQ(pomoTasks[a].target, MAX_TASK_BLOCKS);
+
+  // Tapping the on screen steppers must hit the right zones.
+  pomoView = POMO_VIEW_TASKS;
+  drawPomodoroScreen(true);
+  int rowY = 32 - pomoScrollY + 10;  // first row of the list
+  adjustPomoTaskTarget(a, -1);
+  int before = pomoTasks[a].target;
+  handlePomodoroTouch(true, 256, rowY + 12);   // "+" button (246..266)
+  CHECK_EQ(pomoTasks[a].target, before + 1);
+  handlePomodoroTouch(true, 196, rowY + 12);   // "-" button (186..206)
+  CHECK_EQ(pomoTasks[a].target, before);
+  handlePomodoroTouch(true, 196, rowY + 12);   // and again
+  CHECK_EQ(pomoTasks[a].target, before - 1);
+  handlePomodoroTouch(true, 256, rowY + 12);
+  CHECK_EQ(pomoTasks[a].target, before);
+
+  // Focusing a row selects it for the next finished block.
+  handlePomodoroTouch(true, 60, rowY + 12);
+  CHECK_EQ(pomoActiveTask, a);
+
+  // Completing a block credits the focused task.
+  int credited = pomoTasks[a].blocks;
+  pomoCreditActiveTask();
+  CHECK_EQ(pomoTasks[a].blocks, credited + 1);
+
+  // Ticking a row marks it done; clearing removes it.
+  handlePomodoroTouch(true, 12, rowY + 12);
+  CHECK(pomoTasks[a].done);
+  clearDonePomoTasks();
+  CHECK(!pomoTasks[1].in_use);           // the list shifted up by one
+  CHECK(pomoTasks[0].in_use);
+  CHECK_EQ(pomoTasks[0].text, String("Email"));
+}
+
+// ===========================================================================
+// scrolling on the pages that overflow
+// ===========================================================================
+static void testScrolling() {
+  SUITE("scrolling");
+  resetPomodoroState();
+  pomoView = POMO_VIEW_TASKS;
+
+  // A short list fits, so no scroll control is offered.
+  addPomoTask("One");
+  drawPomodoroScreen(true);
+  CHECK_EQ(pomoScrollMax, 0);
+  CHECK(!pomoHandleScrollTouch(280, 230));
+
+  // Fill the list: the page now continues below the fold.
+  for (int i = 0; i < MAX_POMO_TASKS - 1; i++) addPomoTask("Task");
+  drawPomodoroScreen(true);
+  int contentH = 12 + MAX_POMO_TASKS * 26;  // hint line + one row per task
+  CHECK_EQ(pomoScrollMax, contentH - (204 - 32));
+  CHECK(pomoScrollMax > 0);
+  CHECK_EQ(pomoScrollY, 0);
+
+  // The down button (bottom right) moves the content down, the up button
+  // brings it back.
+  CHECK(pomoHandleScrollTouch(287, 230));
+  CHECK(pomoScrollY > 0);
+  int mid = pomoScrollY;
+  CHECK(pomoHandleScrollTouch(287, 213));
+  CHECK_EQ(pomoScrollY, 0);
+  pomoHandleScrollTouch(287, 230);
+  pomoHandleScrollTouch(287, 230);
+  CHECK(pomoScrollY >= mid);
+  CHECK_EQ(pomoScrollY, pomoScrollMax);  // clamped at the end
+  CHECK(pomoHandleScrollTouch(287, 213));
+  CHECK_EQ(pomoScrollY, 0);
+  CHECK(pomoHandleScrollTouch(287, 213));  // up at the top is a no-op
+
+  // The control sits inside the screen and clear of the action bar buttons.
+  CHECK(287 >= 262 - 1 && 287 <= 262 + 50);
+  CHECK(222 + 16 <= 240);   // the down button fits on the panel
+  CHECK(205 >= 204 - 1);    // and stays clear of the action bar
+
+  // Switching pages resets the offset.
+  pomoScrollY = 20;
+  pomoSwitchView(POMO_VIEW_PRESETS);
+  CHECK_EQ(pomoScrollY, 0);
+
+  // The presets page also scrolls when routines are saved.
+  for (int i = 0; i < MAX_POMO_TEMPLATES; i++) {
+    pomoTemplates[i].name = String("Routine ") + String(i);
+    pomoTemplates[i].in_use = 1;
+  }
+  drawPomodoroScreen(true);
+  CHECK(pomoScrollMax > 0);
+  CHECK(pomoHandleScrollTouch(287, 230));
+  CHECK(pomoScrollY > 0);
+}
+
+// ===========================================================================
+// keyboard layout and key repaint
+// ===========================================================================
+static void testKeyboard() {
+  SUITE("keyboard");
+  resetPomodoroState();
+
+  // Letters are laid out the way a normal keyboard is (QWERTY), not A-Z.
+  CHECK(!strcmp(text_alpha_keys[0][0], "q"));
+  CHECK(!strcmp(text_alpha_keys[0][1], "w"));
+  CHECK(!strcmp(text_alpha_keys[0][2], "e"));
+  CHECK(!strcmp(text_alpha_keys[1][0], "u"));
+  CHECK(!strcmp(text_alpha_keys[4][0], "n"));
+  CHECK(!strcmp(text_alpha_keys[4][1], "m"));
+  CHECK(!strcmp(text_alpha_keys[4][2], "SP"));
+  CHECK(!strcmp(text_alpha_keys[4][5], "DEL"));
+
+  // Every letter of the alphabet appears exactly once.
+  std::string letters;
+  for (int r = 0; r < 4; r++)
+    for (int c = 0; c < 6; c++) letters += text_alpha_keys[r][c];
+  letters += text_alpha_keys[4][0];
+  letters += text_alpha_keys[4][1];
+  CHECK_EQ((int)letters.size(), 26);
+  for (char ch = 'a'; ch <= 'z'; ch++) CHECK(letters.find(ch) != std::string::npos);
+
+  // Typing a letter writes it and the key is repainted afterwards, so the
+  // label of the tapped key does not vanish (the bug the user hit: the pressed
+  // key was left in the pressed colour until the board was redrawn).
+  currentState = STATE_TEXT_KBD;
+  textInputBuf = "";
+  textInputCursor = 0;
+  textKbNumeric = false;
+  textInputTarget = TEXT_TARGET_TASK;
+  textInputMax = 22;
+  startTextInput("NEW TASK", "", TEXT_TARGET_TASK, POMO_NAME_LEN);
+  HostDraw::reset();
+  handleTextKeyboardTouch(true, 2 + 0 * 53 + 5, 78 + 0 * 32 + 5);  // top left = Q
+  CHECK_EQ(textInputBuf, String("q"));
+  bool labelRepainted = false;
+  for (auto &line : HostDraw::log()) {
+    if (line.rfind("text ", 0) == 0 && line.find(" q") != std::string::npos) labelRepainted = true;
+  }
+  CHECK(labelRepainted);
+
+  // Same for the letters of the point keyboard: the tapped key is repainted.
+  currentState = STATE_POINT_KBD;
+  pointKbAlpha = true;
+  pointInput = "";
+  pointCursor = 0;
+  HostDraw::reset();
+  handlePointKeyboardTouch(true, 2 + 0 * 53 + 5, 40 + 0 * 40 + 5);  // top left = a
+  bool pointRepaint = false;
+  for (auto &line : HostDraw::log()) {
+    if (line.rfind("text ", 0) == 0 && line.find(" a") != std::string::npos) pointRepaint = true;
+  }
+  CHECK(pointRepaint);
+  pointKbAlpha = false;
+  pointInput = "";
+  pointCursor = 0;
+}
+
+// ===========================================================================
+// touch calibration
+// ===========================================================================
+static void testCalibration() {
+  SUITE("calibration");
+  Preferences::resetAll();
+  touchCalibrated = false;
+  calBL = TS_Point();
+
+  // A swapped panel: raw x follows the screen y and raw y the screen x.
+  auto panelRaw = [](int sx, int sy) {
+    TS_Point p;
+    p.x = (int)(sy * (3600.0 / 240.0)) + 200;
+    p.y = (int)(sx * (3600.0 / 320.0)) + 150;
+    p.z = 500;
+    return p;
+  };
+  calTL = panelRaw(24, 24);
+  calTR = panelRaw(296, 24);
+  calBR = panelRaw(296, 216);
+  calBL = panelRaw(24, 216);
+  CHECK(fitTouchCalibration());
+  CHECK(touch_swap_xy);
+  int sx = 0, sy = 0;
+  TS_Point raw = panelRaw(24, 24);
+  CHECK(applyTouchCalibration(raw, sx, sy));
+  CHECK(abs(sx - 24) <= 2 && abs(sy - 24) <= 2);
+  raw = panelRaw(296, 216);
+  CHECK(applyTouchCalibration(raw, sx, sy));
+  CHECK(abs(sx - 296) <= 2 && abs(sy - 216) <= 2);
+  raw = panelRaw(160, 120);
+  CHECK(applyTouchCalibration(raw, sx, sy));
+  CHECK(abs(sx - 160) <= 2 && abs(sy - 120) <= 2);
+
+  // An unswapped panel is detected as such and still fits.
+  auto panelRaw2 = [](int sx, int sy) {
+    TS_Point p;
+    p.x = (int)(sx * (3600.0 / 320.0)) + 150;
+    p.y = (int)(sy * (3600.0 / 240.0)) + 200;
+    p.z = 500;
+    return p;
+  };
+  calTL = panelRaw2(24, 24);
+  calTR = panelRaw2(296, 24);
+  calBR = panelRaw2(296, 216);
+  calBL = panelRaw2(24, 216);
+  CHECK(fitTouchCalibration());
+  CHECK(!touch_swap_xy);
+  raw = panelRaw2(296, 24);
+  CHECK(applyTouchCalibration(raw, sx, sy));
+  CHECK(abs(sx - 296) <= 2 && abs(sy - 24) <= 2);
+
+  // Four taps that are not really in four corners are rejected, so a bad
+  // calibration can never be stored.
+  calTL = panelRaw2(200, 200);
+  calTR = panelRaw2(210, 205);
+  calBR = panelRaw2(205, 210);
+  calBL = panelRaw2(202, 208);
+  CHECK(!fitTouchCalibration());
+
+  // Saved calibration survives a reload.
+  calTL = panelRaw2(24, 24);
+  calTR = panelRaw2(296, 24);
+  calBR = panelRaw2(296, 216);
+  calBL = panelRaw2(24, 216);
+  CHECK(fitTouchCalibration());
+  saveTouchCalibration();
+  touchCalibrated = false;
+  tcalX[0] = tcalX[1] = tcalX[2] = 0;
+  loadTouchCalibration();
+  CHECK(touchCalibrated);
+  raw = panelRaw2(160, 120);
+  CHECK(applyTouchCalibration(raw, sx, sy));
+  CHECK(abs(sx - 160) <= 3 && abs(sy - 120) <= 3);
+
+  // A truncated record falls back to the legacy mapping instead of crashing.
+  Preferences::resetAll();
+  touchCalibrated = false;
+  loadTouchCalibration();
+  CHECK(!touchCalibrated);
+}
+
+// ===========================================================================
+// earbud / AVRCP control
+// ===========================================================================
+static void testEarbuds() {
+  audioSetSourceDirect(false);   // ring path
+  SUITE("earbuds");
+  resetPomodoroState();
+  hostAvrcReset();
+  btInitialized = true;
+  a2dp_source.set_connected(false);
+  pomoApplyMode(MODE_WORK);
+  String n0 = earbudLastEvent();
+  (void)n0;
+
+  SD.reset();
+  hostMakeWav("/track1.wav", 1);
+  hostMakeWav("/track2.wav", 1);
+  sdReady = true;
+  btInitialized = true;
+  numTracks = 2;
+  playlist[0] = "track1.wav";
+  playlist[1] = "track2.wav";
+  currentTrack = 0;
+  currentVolume = 40;
+  isPlaying = false;
+  a2dp_source.start("cyd-os");
+  earbudControlsSetEnabled(true);
+
+  // The passthrough handler and the notification capabilities are installed
+  // before the stack starts.
+  earbudControlsPrepare();
+  CHECK(a2dp_source.passthruCallback() != nullptr);
+  CHECK(a2dp_source.passthruCallback() == earbudPassthruHandler);
+  bool hasVolume = false, hasPlay = false;
+  for (auto e : a2dp_source.rnEventsRef()) {
+    if (e == ESP_AVRC_RN_VOLUME_CHANGE) hasVolume = true;
+    if (e == ESP_AVRC_RN_PLAY_STATUS_CHANGE) hasPlay = true;
+  }
+  CHECK(hasVolume);
+  CHECK(hasPlay);
+
+  // No device yet: nothing to attach, and presses are simply queued.
+  earbudControlsPoll();
+  CHECK(hostAvrc.registered == nullptr);
+
+  // Once a device is connected the target callback is installed, and the
+  // library's own handler still receives every event.
+  a2dp_source.set_connected(true);
+  earbudControlsPoll();
+  CHECK(hostAvrc.registered != nullptr);
+
+  // A controller that registers for the volume notification must get the
+  // interim response the AVRCP spec requires, otherwise the buds stop sending
+  // their buttons.
+  esp_avrc_tg_cb_param_t p;
+  memset(&p, 0, sizeof(p));
+  p.reg_ntf.event_id = ESP_AVRC_RN_VOLUME_CHANGE;
+  hostAvrc.deliver(ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT, &p);
+  // The Bluetooth callback only records the registration: replying from inside
+  // it would call stack APIs from the Bluetooth task.  The reply is sent by the
+  // notifier instead.
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_INTERIM), 0);
+  earbudNotifyStep();
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_INTERIM), 1);
+  CHECK_EQ(a2dp_source.lastTgEvent, (int)ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT);
+
+  memset(&p, 0, sizeof(p));
+  p.reg_ntf.event_id = ESP_AVRC_RN_PLAY_STATUS_CHANGE;
+  hostAvrc.deliver(ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT, &p);
+  earbudNotifyStep();
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_INTERIM), 1);
+  // A registration is answered once, not every time the notifier runs.
+  earbudNotifyStep();
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_INTERIM), 1);
+
+  // A play/pause tap is acted on once, releases are ignored.
+  earbudPassthruHandler(ESP_AVRC_PT_CMD_PLAY, false);
+  earbudPassthruHandler(ESP_AVRC_PT_CMD_PLAY, true);
+  earbudControlsPoll();
+  CHECK(isPlaying);
+  CHECK_EQ(earbudLastEvent(), String("PLAY"));
+  CHECK(earbudEventCount() > 0);
+
+  // The buds are told about the state change they asked for.
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED), 0);
+  earbudNotifyStep();
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED), 1);
+  // ...and not twice: the interim is consumed until the buds register again.
+  earbudNotifyStep();
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED), 1);
+
+  // Next / previous move through the playlist.
+  earbudPassthruHandler(ESP_AVRC_PT_CMD_FORWARD, false);
+  earbudControlsPoll();
+  CHECK_EQ(currentTrack, 1);
+  earbudPassthruHandler(ESP_AVRC_PT_CMD_BACKWARD, false);
+  earbudControlsPoll();
+  CHECK_EQ(currentTrack, 0);
+  CHECK_EQ(earbudLastEvent(), String("PREV"));
+
+  // Volume keys step the local volume.
+  currentVolume = 40;
+  earbudPassthruHandler(ESP_AVRC_PT_CMD_VOL_UP, false);
+  earbudControlsPoll();
+  CHECK_EQ(currentVolume, 45);
+  earbudPassthruHandler(ESP_AVRC_PT_CMD_VOL_DOWN, false);
+  earbudControlsPoll();
+  CHECK_EQ(currentVolume, 40);
+  for (int i = 0; i < 20; i++) {
+    earbudPassthruHandler(ESP_AVRC_PT_CMD_VOL_UP, false);
+    earbudControlsPoll();
+  }
+  CHECK_EQ(currentVolume, 100);  // clamped
+
+  // Absolute volume: most true wireless buds (including the Soundcore R50i NC)
+  // send volume taps this way.  The library only logged this event, so the
+  // volume never moved before.
+  memset(&p, 0, sizeof(p));
+  p.set_abs_vol.volume = 0x40;  // 64 of 127
+  hostAvrc.deliver(ESP_AVRC_TG_SET_ABSOLUTE_VOLUME_CMD_EVT, &p);
+  earbudControlsPoll();
+  CHECK_EQ(currentVolume, 50);
+  CHECK_EQ(earbudLastEvent(), String("ABS VOL"));
+
+  memset(&p, 0, sizeof(p));
+  p.set_abs_vol.volume = 0x7F;
+  hostAvrc.deliver(ESP_AVRC_TG_SET_ABSOLUTE_VOLUME_CMD_EVT, &p);
+  earbudControlsPoll();
+  CHECK_EQ(currentVolume, 100);
+
+  memset(&p, 0, sizeof(p));
+  p.set_abs_vol.volume = 0;
+  hostAvrc.deliver(ESP_AVRC_TG_SET_ABSOLUTE_VOLUME_CMD_EVT, &p);
+  earbudControlsPoll();
+  CHECK_EQ(currentVolume, 0);
+
+  // A lone release (no matching press) does nothing.
+  int beforeVolume = currentVolume;
+  earbudPassthruHandler(ESP_AVRC_PT_CMD_VOL_DOWN, true);
+  earbudControlsPoll();
+  CHECK_EQ(currentVolume, beforeVolume);
+
+  // Switching the feature off ignores the buds entirely.
+  earbudControlsSetEnabled(false);
+  currentVolume = 30;
+  earbudPassthruHandler(ESP_AVRC_PT_CMD_VOL_UP, false);
+  hostAvrc.deliver(ESP_AVRC_TG_SET_ABSOLUTE_VOLUME_CMD_EVT, &p);
+  earbudControlsPoll();
+  CHECK_EQ(currentVolume, 30);
+  earbudControlsSetEnabled(true);
+
+  // Disconnecting forgets the notification registrations.
+  memset(&p, 0, sizeof(p));
+  p.conn_stat.connected = false;
+  hostAvrc.deliver(ESP_AVRC_TG_CONNECTION_STATE_EVT, &p);
+  hostAvrc.reset();
+  earbudPassthruHandler(ESP_AVRC_PT_CMD_PAUSE, false);
+  earbudControlsPoll();
+  earbudNotifyStep();
+  CHECK_EQ(hostAvrc.rnResponseCount(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED), 0);
+}
+
+// ===========================================================================
+// persistence
+// ===========================================================================
+// ===========================================================================
+// idle screen + the RGB LED
+// ===========================================================================
+// Two things are being checked here: no idle state leaves the board looking
+// switched off to a USB power bank, and the LED's patterns and colours really
+// do follow the settings and the running task.
+static int peakOver(LedEffect effect, LedColor color, LedLevel level, int period, int step = 25) {
+  int peak = 0;
+  hostSetMillisStep(0);
+  for (int t = 0; t < period; t += step) {
+    hostSetMillis(1000 + t);
+    ledRequest(color, effect, level);
+    ledTick();
+    peak = max(peak, ledBrightnessNow());
+  }
+  return peak;
+}
+
+static void testLed() {
+  SUITE("idle led");
+  pomoRunning = false;
+  currentState = STATE_HOME;
+  hostSetMillisStep(0);
+  // Earlier suites finish pomodoro phases, which fires an announcement; clear it
+  // so this suite starts from a known light state.
+  ledAlert(0);
+  hostSetMillis(1000);
+
+  // DARK: backlight off, and the LED doing the keep-awake duty.
+  idleMode = IDLE_DARK;
+  ledColor = LED_C_VIOLET;
+  ledEffect = LED_E_FADE;
+  ledLevel = LED_L_MED;
+  screenOn = true;
+  screensaverActive = false;
+  setScreenPower(false);
+  updateStatusLed();
+  CHECK(!screenOn);
+  CHECK_EQ(backlightLevel(), 0);
+  CHECK_EQ(hostPwmDuty(TFT_BL_CH), 0);
+  CHECK(ledBrightnessNow() > 0);                    // never looks unplugged
+  CHECK(ledBrightnessNow() < 255);                  // and never full blast
+
+  // DIM: the panel is not black, but it is dark, and the LED runs too.
+  idleMode = IDLE_DIM;
+  screenOn = true;
+  setScreenPower(false);
+  updateStatusLed();
+  CHECK(!screenOn);
+  CHECK_EQ(backlightLevel(), TFT_BL_DIM_DUTY);
+  CHECK(hostPwmDuty(TFT_BL_CH) < (int)TFT_BL_FULL_DUTY);
+  CHECK(ledBrightnessNow() > 0);
+
+  // CLOCK: the screensaver keeps the panel lit, so the LED is not needed.
+  idleMode = IDLE_CLOCK;
+  screenOn = true;
+  setScreenPower(false);
+  updateStatusLed();
+  CHECK(screensaverActive);
+  CHECK_EQ(backlightLevel(), TFT_BL_FULL_DUTY);
+  CHECK_EQ(ledBrightnessNow(), 0);
+
+  // ...and after the long saver timeout the screen goes dark and the LED takes
+  // over, which is the case that used to switch the board off.
+  hostSetMillis(hostMillisValue() + SCREEN_TIMEOUT_MS + SAVER_OFF_MS + 5000);
+  lastActivityTime = millis() - (SCREEN_TIMEOUT_MS + SAVER_OFF_MS + 5000);
+  updateIdleScreen();
+  updateStatusLed();
+  CHECK(!screensaverActive);
+  CHECK(!screenOn);
+  CHECK_EQ(backlightLevel(), 0);
+  CHECK(ledBrightnessNow() > 0);
+
+  // Waking restores the panel fully and puts the LED out.
+  setScreenPower(true);
+  updateStatusLed();
+  CHECK(screenOn);
+  CHECK_EQ(backlightLevel(), TFT_BL_FULL_DUTY);
+  CHECK_EQ(hostPwmDuty(TFT_BL_CH), (int)TFT_BL_FULL_DUTY);
+  CHECK_EQ(ledBrightnessNow(), 0);
+
+  // Brightness levels: LOW < MED < HIGH, and the default is not full blast.
+  CHECK(ledLevelPeak(LED_L_LOW) < ledLevelPeak(LED_L_MED));
+  CHECK(ledLevelPeak(LED_L_MED) < ledLevelPeak(LED_L_HIGH));
+  CHECK(ledLevelPeak(LED_L_HIGH) == 255);
+  CHECK(ledLevelPeak(LED_L_MED) <= 140);            // "100% is too much"
+
+  // FADE is a linear ramp: it rises to the level's peak and falls back, and the
+  // floor keeps it visible (and the power bank loaded) at the bottom.
+  int lowPeak = peakOver(LED_E_FADE, LED_C_VIOLET, LED_L_MED, 2600);
+  int hiPeak = peakOver(LED_E_FADE, LED_C_VIOLET, LED_L_HIGH, 2600);
+  CHECK_EQ(hiPeak, 255);
+  CHECK(lowPeak > 0 && lowPeak < hiPeak);
+
+  // The ramp starts at phase 0, so sampling at 0 / 650 / 1300 / 1950 ms of the
+  // 2600 ms period lands on the floor, the quarter, the peak and three quarters.
+  hostSetMillis(0);
+  ledRequest(LED_C_VIOLET, LED_E_FADE, LED_L_MED);
+  ledTick();
+  int atZero = ledBrightnessNow();
+  hostSetMillis(650);
+  ledTick();
+  int atQuarter = ledBrightnessNow();
+  hostSetMillis(1300);
+  ledTick();
+  int atHalf = ledBrightnessNow();
+  hostSetMillis(1950);
+  ledTick();
+  int atThreeQ = ledBrightnessNow();
+  CHECK(atZero > 0);                                // the floor, not black
+  CHECK(atQuarter > atZero && atHalf > atQuarter);  // straight ramp up
+  CHECK(atThreeQ < atHalf);                         // and straight back down
+  CHECK(abs((int)atQuarter - (int)atThreeQ) <= 12); // symmetric ramp
+  CHECK(abs((int)atHalf - lowPeak) <= 6);           // it reaches the peak
+
+  // BREATHE is the smooth one, CYCLE walks the colour wheel, PULSE is a
+  // sawtooth: all three move over time and none of them goes black.
+  for (LedEffect e : { LED_E_BREATHE, LED_E_CYCLE, LED_E_PULSE }) {
+    int minV = 255, maxV = 0;
+    hostSetMillisStep(0);
+    for (int t = 0; t < 3600; t += 50) {
+      hostSetMillis(5000 + t);
+      ledRequest(LED_C_BLUE, e, LED_L_MED);
+      ledTick();
+      minV = min(minV, ledBrightnessNow());
+      maxV = max(maxV, ledBrightnessNow());
+    }
+    CHECK(maxV > minV);                             // it animates
+    CHECK(minV > 0);                                // and never switches off
+  }
+
+  // CYCLE really does change colour, not just brightness.
+  uint8_t r0, g0, b0, r1, g1, b1;
+  hostSetMillis(0);
+  ledRequest(LED_C_BLUE, LED_E_CYCLE, LED_L_MED);
+  ledTick();
+  ledChannelsNow(&r0, &g0, &b0);
+  hostSetMillis(1800);
+  ledTick();
+  ledChannelsNow(&r1, &g1, &b1);
+  CHECK(r0 != r1 || g0 != g1 || b0 != b1);
+
+  // Colours are what they say: green is green, and so on.
+  hostSetMillis(0);
+  ledRequest(LED_C_GREEN, LED_E_SOLID, LED_L_HIGH);
+  ledTick();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(g0 > r0 && g0 > b0);
+  ledRequest(LED_C_BLUE, LED_E_SOLID, LED_L_HIGH);
+  ledTick();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(b0 > r0 && b0 > g0);
+  ledRequest(LED_C_RED, LED_E_SOLID, LED_L_HIGH);
+  ledTick();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(r0 > g0 && r0 > b0);
+
+  // Tasks drive the light while the screen is on, when the show mode includes
+  // them: focus fades amber, a short break breathes green, a long break blue,
+  // and music walks the colour wheel.
+  ledShow = LED_S_APPS;
+  screenOn = true;
+  screensaverActive = false;
+  pomoRunning = true;
+  pomoMode = MODE_WORK;
+  hostSetMillis(0);
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(r0 > 0 && r0 >= g0 && g0 > b0);             // amber
+  pomoMode = MODE_SHORT_BREAK;
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(g0 > 0 && g0 > r0 && g0 > b0);              // green
+  pomoMode = MODE_LONG_BREAK;
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(b0 > 0 && b0 > r0 && b0 > g0);              // blue
+  pomoRunning = false;
+  isPlaying = true;
+  hostSetMillis(0);
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  hostSetMillis(1800);
+  updateStatusLed();
+  ledChannelsNow(&r1, &g1, &b1);
+  CHECK(r0 != r1 || g0 != g1 || b0 != b1);          // the wheel turns
+  isPlaying = false;
+
+  // The chosen BRIGHTNESS must reach the app patterns too: it used to be
+  // ignored there, which made the control look dead.
+  ledShow = LED_S_APPS;
+  ledLevel = LED_L_LOW;
+  pomoRunning = true;
+  pomoMode = MODE_WORK;
+  hostSetMillis(0);
+  updateStatusLed();
+  int workLow = ledBrightnessNow();
+  ledLevel = LED_L_HIGH;
+  updateStatusLed();
+  int workHigh = ledBrightnessNow();
+  CHECK(workLow > 0 && workLow < workHigh);
+  ledLevel = LED_L_MED;
+
+  // DARK is the keep-awake-only mode; ALWAYS keeps the light on with nothing
+  // running and the screen lit.
+  ledShow = LED_S_DARK;
+  updateStatusLed();
+  CHECK_EQ(ledBrightnessNow(), 0);
+  ledShow = LED_S_ALWAYS;
+  pomoRunning = false;
+  updateStatusLed();
+  CHECK(ledBrightnessNow() > 0);
+
+  // Whatever the mode, the dark screen still gets its keep-awake light.
+  ledShow = LED_S_APPS;
+  pomoRunning = false;
+  idleMode = IDLE_DARK;
+  setScreenPower(false);
+  updateStatusLed();
+  CHECK(ledBrightnessNow() > 0);
+
+  // An announcement flashes red over everything else.
+  hostSetMillis(20000);
+  ledAlert(2000);
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  hostSetMillis(20100);                    // inside a bright half of the flash
+  updateStatusLed();
+  ledChannelsNow(&r0, &g0, &b0);
+  CHECK(r0 > 0 && g0 == 0 && b0 == 0);
+  hostSetMillis(20200);                    // ...and the dark half of the flash
+  updateStatusLed();
+  CHECK_EQ(ledBrightnessNow(), 0);
+  CHECK(ledAlertActiveForTest());
+  hostSetMillis(23000);                            // the flash is over
+  ledRequest(LED_C_BLUE, LED_E_SOLID, LED_L_MED);
+  updateStatusLed();
+  CHECK(!ledAlertActiveForTest());
+
+  // Settings previews show the pattern even while everything else is idle.
+  setScreenPower(true);
+  idleMode = IDLE_CLOCK;
+  hostSetMillis(30000);
+  ledPreview(LED_C_AMBER, LED_E_PULSE, LED_L_HIGH);
+  updateStatusLed();
+  CHECK(ledBrightnessNow() > 0);
+  CHECK(ledPreviewActive());
+  hostSetMillis(33000);                            // preview expired
+  updateStatusLed();
+  CHECK_EQ(ledBrightnessNow(), 0);
+  CHECK(!ledPreviewActive());
+
+  // Wiring: the other polarity mirrors every duty, which is what a clone board
+  // needs to look right.
+  ledShow = LED_S_ALWAYS;
+  setScreenPower(true);
+  ledLevel = LED_L_HIGH;
+  ledInvert = false;
+  hostSetMillis(0);
+  updateStatusLed();
+  int dutyNormal = hostPwmDuty(LED_CH_B);
+  ledInvert = true;
+  updateStatusLed();
+  int dutyInverted = hostPwmDuty(LED_CH_B);
+  CHECK_EQ(dutyNormal + dutyInverted, (int)LED_PWM_MAX);
+  ledInvert = false;
+  ledShow = LED_S_APPS;
+
+  // The black level must never be dark enough to be mistaken for "unplugged".
+  CHECK(TFT_BL_DIM_DUTY > 0);
+  ledLevel = LED_L_MED;
+  hostSetMillisStep(250);
+}
+
+// ===========================================================================
+// pomodoro dates: the history is keyed by the local calendar date
+// ===========================================================================
+// The host runs in whatever timezone it was started with, so this suite sets one
+// itself.  That is the point: the original bug only showed east of UTC, where
+// local midnight falls on the previous UTC day, and every date in the reports
+// came out a day early.
+static void testPomodoroDates() {
+  SUITE("pomodoro dates");
+  setenv("TZ", "IST-5:30", 1);              // Sri Lanka: UTC+05:30
+  tzset();
+
+  struct tm t = {};
+  t.tm_year = 2026 - 1900;
+  t.tm_mon = 8;                             // September
+  t.tm_mday = 25;
+  t.tm_hour = 12;                           // midday, so an off-by-one cannot hide
+  t.tm_min = 0;
+  t.tm_sec = 0;
+  t.tm_isdst = 0;
+  time_t noon = mktime(&t);
+  hostSetClock(noon);
+
+  uint32_t today = pomoTodayDay();
+  int y = 0, m = 0, d = 0;
+  pomoDayDate(today, &y, &m, &d);
+  CHECK_EQ(y, 2026);
+  CHECK_EQ(m, 9);
+  CHECK_EQ(d, 25);                          // not 24: the local date, not the UTC one
+  CHECK_EQ(pomoWeekday(today), 5);          // and 25 Sep 2026 really is a Friday
+
+  // Late local evening is the other half of the trap: 23:30 local is still the
+  // 25th, even though it is already the 26th in UTC.
+  t.tm_hour = 23;
+  t.tm_min = 30;
+  noon = mktime(&t);
+  hostSetClock(noon);
+  pomoDayDate(pomoTodayDay(), &y, &m, &d);
+  CHECK_EQ(d, 25);
+
+  // A block recorded now lands on that same day, and the report sees it.
+  pomoHistoryCount = 0;
+  for (int i = 0; i < POMO_HISTORY_DAYS; i++) pomoHistory[i] = PomoDayStat();
+  pomoRecordWorkBlock(25 * 60, true);
+  CHECK_EQ(pomoStatMinutes(today), 25);
+  CHECK_EQ(pomoStatBlocks(today), 1);
+  CHECK_EQ(pomoSumMinutes(-6, 0, *(new int)), 25);
+  CHECK_EQ(pomoStatMinutes(today - 1), 0);
+
+  // Work logged while the clock was unset is re-keyed onto the real calendar
+  // when a date arrives, keeping its order - and the anchor then holds that
+  // date, so a clock-less session continues from it instead of writing 1970.
+  pomoHistoryCount = 0;
+  for (int i = 0; i < POMO_HISTORY_DAYS; i++) pomoHistory[i] = PomoDayStat();
+  uint32_t anchorBefore = prefs.getULong("histday", 0);
+  hostSetMillisStep(0);
+  hostSetMillis(0);
+  {
+    // Two clock-less days: simulate by recording and then re-dating them.
+    pomoRecordWorkBlock(30 * 60, true);
+    pomoHistory[pomoHistoryCount - 1].synced = 0;
+    pomoHistory[pomoHistoryCount - 1].day = anchorBefore;
+    PomoDayStat second;
+    second.day = anchorBefore + 1;
+    second.minutes = 45;
+    second.blocks = 2;
+    second.synced = 0;
+    second.in_use = true;
+    pomoHistory[pomoHistoryCount++] = second;
+  }
+  pomoEnsureToday();
+  CHECK_EQ(pomoStatMinutes(today), 45);     // the newest clock-less day is today
+  CHECK_EQ(pomoStatMinutes(today - 1), 30);
+  CHECK_EQ(pomoHistory[pomoHistoryCount - 1].synced, 1);
+  CHECK_EQ(prefs.getULong("histday", 0), today);
+
+  // With no clock at all the anchor rolls over every 24 h of uptime, so a long
+  // session does not pile every day onto one date.
+  hostSetClock(0);                          // 1970: the clock was never set
+  CHECK(!pomoClockValid());
+  uint32_t dayAtBoot = pomoTodayDay();
+  CHECK_EQ(dayAtBoot, today);
+  hostSetMillis(86400000UL + 1000);          // a day and a bit later
+  CHECK_EQ(pomoTodayDay(), today + 1);
+  hostSetMillisStep(250);
+  hostSetMillis(0);
+
+  // A day that already has data must not gain a second row: that is what made
+  // the totals and the day view disagree.  Re-keying merges into it instead.
+  // (The clock is set back to the 25th for this part - re-keying only happens
+  // once a real date is known.)
+  t.tm_hour = 22;
+  t.tm_min = 0;
+  hostSetClock(mktime(&t));
+  pomoHistoryCount = 0;
+  for (int i = 0; i < POMO_HISTORY_DAYS; i++) pomoHistory[i] = PomoDayStat();
+  {
+    PomoDayStat real;
+    real.day = today;
+    real.minutes = 30;
+    real.blocks = 1;
+    real.synced = 1;
+    real.in_use = true;
+    pomoHistory[pomoHistoryCount++] = real;
+    PomoDayStat cl;
+    cl.day = anchorBefore;
+    cl.minutes = 45;
+    cl.blocks = 2;
+    cl.synced = 0;
+    cl.in_use = true;
+    pomoHistory[pomoHistoryCount++] = cl;
+  }
+  pomoEnsureToday();
+  CHECK_EQ(pomoHistoryCount, 1);
+  CHECK_EQ(pomoStatMinutes(today), 75);     // merged, not a duplicate
+  CHECK_EQ(pomoStatBlocks(today), 3);
+  CHECK_EQ(pomoSumMinutes(-6, 0, *(new int)), 75);
+
+  // ...and rows that were already duplicated in the stored table fold together
+  // when they are loaded, so the old data is repaired rather than kept wrong.
+  {
+    static uint8_t rows[2 * 8];
+    auto put = [](uint8_t* p, uint32_t day, uint16_t mins, uint8_t blocks) {
+      p[0] = (uint8_t)day; p[1] = (uint8_t)(day >> 8); p[2] = (uint8_t)(day >> 16); p[3] = (uint8_t)(day >> 24);
+      p[4] = (uint8_t)mins; p[5] = (uint8_t)(mins >> 8); p[6] = blocks; p[7] = 1;
+    };
+    put(rows, today, 20, 1);
+    put(rows + 8, today, 25, 2);
+    prefs.putInt("histN", 2);
+    prefs.putBytes("hist", rows, sizeof(rows));
+    loadPomoStore();
+    CHECK_EQ(pomoHistoryCount, 1);
+    CHECK_EQ(pomoStatMinutes(today), 45);
+    CHECK_EQ(pomoStatBlocks(today), 3);
+    prefs.putInt("histN", 0);
+    prefs.remove("hist");
+    pomoHistoryCount = 0;
+    for (int i = 0; i < POMO_HISTORY_DAYS; i++) pomoHistory[i] = PomoDayStat();
+  }
+
+  // Put the clock and the timezone back so later suites see the host as it was.
+  hostSetClock(-1);
+  unsetenv("TZ");
+  tzset();
+}
+
+// ===========================================================================
+// graph zoom buttons
+// ===========================================================================
+// The + and - buttons stopped working on a calibrated panel: the press-and-hold
+// loop re-derived the touch position with the legacy axis mapping, so its hit
+// test failed and it gave up before zooming.  This suite drives a simulated
+// finger through the same calibration the main loop uses.
+static void testGraphZoom() {
+  SUITE("graph zoom");
+  hostSetMillisStep(250);
+  hostSetMillis(5000);
+
+  // A 4 point calibration where the legacy mapping would land somewhere else
+  // entirely: a raw (2500, 2200) is screen (238, 214) here - inside the + button
+  // - but the old code read it as (177, 153), which is not.
+  touchCalibrated = true;
+  tcalX[0] = 0.0952; tcalX[1] = 0.0;  tcalX[2] = 0.5;
+  tcalY[0] = 0.0;    tcalY[1] = 0.0975; tcalY[2] = 0.0;
+
+  int probeX = 0, probeY = 0;
+  hostInjectTouch(true, 2500, 2200);
+  CHECK(readCalibratedTouch(probeX, probeY));
+  CHECK_EQ(probeX, 239);      // rounding of the affine fit
+  CHECK_EQ(probeY, 214);
+  hostInjectTouch(false, 0, 0);
+
+  // A single tap on + zooms one step, and on - one step back.
+  currentState = STATE_GRAPH;
+  centerWorldX = 0.0;
+  centerWorldY = 0.0;
+  zoom = 15.0;
+  touchActive = false;
+  handleGraphTouch(true, 238, 214);              // tap the + button
+  double afterTap = zoom;
+  CHECK(afterTap > 15.0);
+  CHECK(afterTap < 15.0 * 1.2);                  // exactly one step, not many
+  touchActive = false;
+  handleGraphTouch(true, 290, 214);              // tap the - button
+  CHECK(zoom < afterTap);
+  CHECK(zoom > 15.0 * 0.9);
+
+  // Holding + keeps zooming, and letting go stops it.  This is the path that
+  // was dead on a calibrated panel.
+  zoom = 15.0;
+  centerWorldX = 0.0;
+  centerWorldY = 0.0;
+  hostSetMillis(20000);
+  hostInjectTouch(true, 2500, 2200);
+  touchActive = false;
+  handleGraphTouch(true, 238, 214);
+  double held = zoom;
+  hostInjectTouch(false, 0, 0);
+  CHECK(held > afterTap * 1.2);                  // a hold goes well past one step
+  CHECK(held < 15.0 * 8.0);                      // and stays bounded
+
+  // Pulling the finger off the button mid-hold stops the zoom (it does not keep
+  // running while the finger is somewhere else).
+  zoom = 15.0;
+  hostSetMillis(40000);
+  hostInjectTouch(true, 100, 100);               // raw -> screen (10, 9): elsewhere
+  touchActive = false;
+  handleGraphTouch(true, 238, 214);              // the tap still counts as one step
+  double offButton = zoom;
+  hostInjectTouch(false, 0, 0);
+  CHECK(offButton > 15.0 && offButton < 15.0 * 1.2);
+
+  // And the button cannot spin forever if the panel reports a stuck touch.
+  zoom = 15.0;
+  hostSetMillis(60000);
+  hostInjectTouch(true, 2500, 2200);             // never released
+  touchActive = false;
+  handleGraphTouch(true, 238, 214);
+  double stuck = zoom;
+  hostInjectTouch(false, 0, 0);
+  CHECK(stuck > 15.0 && stuck < 15.0 * 8.0);     // the hold limit stopped it
+
+  // Put the calibration back so later suites see a plain panel.
+  touchCalibrated = false;
+  hostSetMillis(0);
+  touchActive = false;
+}
+
+// ===========================================================================
+// audio ring buffer, feeder and Bluetooth data callback
+// ===========================================================================
+// The player feeds the Bluetooth stack from a ring buffer that a background
+// task fills from the SD card.  Everything below runs on a deliberately small
+// ring (1024 bytes) and a deliberately small consumer chunk, so the wraparound,
+// the partial-block and the starved paths are all hit in a handful of KB
+// instead of the 24 KB a real card would need.
+static void testAudio() {
+  audioSetSourceDirect(false);   // ring path
+  SUITE("audio");
+  hostSetMillis(1000);
+  hostSetMillisStep(0);
+
+  bool wasSdReady = sdReady;
+  int wasVolume = currentVolume;
+  sdReady = true;
+  audioSystemReady = true;
+  if (!audioMutex) audioMutex = xSemaphoreCreateMutex();
+  currentVolume = 100;                 // unity gain, so the bytes can be compared
+  applyVolume();
+  CHECK_EQ(audioGainQ8, 256);
+
+  SD.remove("/t.wav");
+  hostMakeWav("/t.wav", 1, 440, 44100);      // 1 s -> 176400 data bytes
+  loadPlaylist();
+  // The earbud suite puts its own WAVs on the card first, so find ours.
+  int wavIdx = -1;
+  for (int i = 0; i < numTracks; i++)
+    if (std::string(playlist[i].c_str()) == "t.wav") wavIdx = i;
+  CHECK(wavIdx >= 0);
+
+  audioRingBuffer = (uint8_t*)malloc(1024);
+  audioRingBytes = 1024;
+  memset(audioRingBuffer, 0, 1024);
+  ringHead = ringTail = 0;
+  fileReadDone = false;
+  trackFinished = false;
+  audioStatsReset();
+
+  playTrack(wavIdx);
+  CHECK(isPlaying);
+  CHECK(currentWav.valid);
+  CHECK_EQ(currentWav.sampleRate, 44100UL);
+  CHECK_EQ(currentWav.dataSize, 44100UL * 4UL);
+
+  // The same PCM straight from the file, to compare byte for byte.  A drop,
+  // a duplicate or a swap in the ring maths shows up here.
+  std::vector<uint8_t> expected((size_t)currentWav.dataSize);
+  {
+    fs::File f = SD.open("/t.wav");
+    f.seek(currentWav.dataStart);
+    CHECK_EQ(f.read(expected.data(), expected.size()), expected.size());
+  }
+
+  // The feeder tops the ring up and then leaves it alone: it must not wrap over
+  // bytes the consumer has not read yet.
+  int filled = 0;
+  for (int i = 0; i < 20; i++) filled += audioFeederStep();
+  CHECK_EQ(filled, 1023);                       // one full ring minus the guard byte
+  CHECK_EQ(getRingBufferAvailableRead(), 1023);
+  CHECK_EQ(audioFeederStep(), 0);               // nothing more fits
+  CHECK_EQ((int)audioBytesFed(), filled);
+
+  std::vector<Frame> out(111);                  // 444 bytes: not a feeder block
+  size_t off = 0;
+  int guard = 0;
+  while (off < expected.size() && guard++ < 4000) {
+    while (getRingBufferAvailableRead() < 444 && !fileReadDone) audioFeederStep();
+    // Only the bytes that were really in the ring are compared: the tail of a
+    // chunk that arrives after the file ended is silence, by design.
+    int have = std::min(getRingBufferAvailableRead(), 444);
+    CHECK_EQ(get_audio_data(out.data(), 111), 111);   // the callback always reports a full packet
+    size_t want = std::min<size_t>((size_t)have, expected.size() - off);
+    if (want == 0 || memcmp(out.data(), expected.data() + off, want) != 0) {
+      CHECK(false);                              // a lost byte, a swap or a duplicate
+      break;
+    }
+    off += want;
+  }
+  CHECK_EQ(off, expected.size());               // the whole track, in order
+  CHECK_EQ(audioBytesFed(), (uint32_t)expected.size());   // fed once, never twice
+
+  // Letting the ring run dry ends the track; the main loop starts the next one.
+  for (int i = 0; i < 5 && !trackFinished; i++) audioFeederStep();
+  CHECK(trackFinished);
+  CHECK(!isPlaying);
+
+  // A starved consumer still hands the link a full packet - of silence - and
+  // counts it, which is what the [I][audio] line reports.
+  audioStatsReset();
+  hostSetMillis(9000);
+  memset(out.data(), 0x7F, out.size() * sizeof(Frame));
+  CHECK_EQ(get_audio_data(out.data(), 111), 111);
+  CHECK_EQ(audioStarveCount(), 1);
+  CHECK_EQ(audioSilenceBytes(), 444);
+  bool silent = true;
+  for (size_t i = 0; i < out.size() * 2; i++)
+    if (((int16_t*)out.data())[i] != 0) silent = false;
+  CHECK(silent);
+
+  // A partly filled ring hands over the real bytes first and pads the rest, so
+  // a short read costs a fraction of a packet instead of all of it.
+  isPlaying = true;
+  fileReadDone = false;
+  ringHead = ringTail = 0;
+  for (int i = 0; i < 100; i++) audioRingBuffer[i] = (uint8_t)i;
+  ringHead = 100;
+  audioStatsReset();
+  memset(out.data(), 0x7F, out.size() * sizeof(Frame));
+  CHECK_EQ(get_audio_data(out.data(), 111), 111);
+  CHECK_EQ(audioStarveCount(), 1);
+  CHECK_EQ(audioSilenceBytes(), 344);           // 444 - 100
+  CHECK_EQ(((uint8_t*)out.data())[0], 0);
+  CHECK_EQ(((uint8_t*)out.data())[99], 99);
+  CHECK_EQ(((uint8_t*)out.data())[100], 0);
+  CHECK_EQ(getRingBufferAvailableRead(), 0);    // the real bytes were consumed
+
+  // The gain is applied on the way out.
+  isPlaying = true;
+  for (int i = 0; i < 8; i++) audioRingBuffer[i] = (uint8_t)(i + 1);
+  ringHead = 8;
+  ringTail = 0;
+  currentVolume = 50;
+  applyVolume();
+  CHECK_EQ(audioGainQ8, 128);
+  memset(out.data(), 0, out.size() * sizeof(Frame));
+  get_audio_data(out.data(), 2);                // 8 bytes = 2 frames
+  CHECK_EQ(((uint8_t*)out.data())[0], 0);       // 1 * 128 >> 8 = 0
+  CHECK_EQ(((uint8_t*)out.data())[1], 1);       // 2 * 128 >> 8 = 1
+  currentVolume = 100;
+  applyVolume();
+
+  // Put the globals back so the rendering shots see the card they expect.
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  audioFile = File();
+  isPlaying = false;
+  trackFinished = false;
+  fileReadDone = false;
+  numTracks = 0;
+  currentTrack = 0;
+  audioSystemReady = false;
+  currentVolume = wasVolume;
+  applyVolume();
+  SD.remove("/t.wav");
+  sdReady = wasSdReady;
+}
+
+// ===========================================================================
+// clock sync over WiFi
+// ===========================================================================
+// The panel cannot be driven for real here, so these tests only pin the retry
+// and teardown logic: an access point that answers on the second attempt must
+// still get the clock set, an access point that never answers must give up with
+// the radio shut down, and WiFi that works but NTP that does not must say so
+// instead of blaming the password.
+static time_t utcEpoch(int y, int mo, int d, int h, int mi, int s) {
+  struct tm t;
+  memset(&t, 0, sizeof(t));
+  t.tm_year = y - 1900;
+  t.tm_mon = mo - 1;
+  t.tm_mday = d;
+  t.tm_hour = h;
+  t.tm_min = mi;
+  t.tm_sec = s;
+  return timegm(&t);
+}
+
+// ===========================================================================
+// HTTP Date parsing (the last resort time source)
+// ===========================================================================
+// ===========================================================================
+// Ring buffer sizing (what the music app allocates before Bluetooth starts)
+// ===========================================================================
+// ===========================================================================
+// Lazy ring allocation - the fix for the traced crash
+// ===========================================================================
+// The hardware backtrace showed the reboots come from a failed ~100 byte
+// semaphore allocation inside the Bluetooth stack while the earbuds connect, so
+// the ring must not be held during that window.  These checks pin the ordering:
+// nothing is allocated while disconnected, nothing during the settling period,
+// and the ring lands once the connection has settled.
+// ===========================================================================
+// Music start ordering (the two fixes for the traced crash)
+// ===========================================================================
+// The hardware backtrace ended in a failed allocation inside the Bluetooth
+// stack while the earbuds connected, with the AVRCP service discovery running.
+// Two things must therefore hold at the moment the music app starts the stack:
+// the AVRCP passthrough handler is registered first (otherwise the library never
+// brings up the target the buttons need), and no ring buffer is held yet (the
+// connection setup gets the whole heap).
+static void testMusicStart() {
+  audioSetSourceDirect(false);   // ring path
+  SUITE("music start");
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  bool wasBt = btInitialized;
+  btInitialized = false;
+  audioSystemReady = false;
+  a2dp_source.set_connected(false);
+  // The stack reports SUSPEND until the sink starts the stream; with a leftover
+  // STARTED state the ring service would take the ring before connecting, which
+  // is exactly what this suite must catch.
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);
+  hostSetMillis(0);
+  hostSetMillisStep(250);   // the touch handler waits for a release
+  hostSetFreeHeap(BT_MIN_HEAP + 40000);
+  audioRingServiceReset();
+
+  SD.reset();
+  hostMakeWav("/live.wav", 1);
+  sdReady = true;
+  numTracks = 1;
+  playlist[0] = "live.wav";
+  currentTrack = 0;
+  a2dp_source.startCount = 0;
+  a2dp_source.startAfterPassthru = false;
+  a2dp_source.hostResetPassthru();          // as if the stack had never started
+  earbudControlsPrepareResetForTest();
+  prefs.putBool("earbud", true);
+
+  currentState = STATE_HOME;
+  // Tap the music tile (home cards are at x 12/116/220, y 58, 96x112).
+  hostInjectTouch(true, 1600, 1300);
+  handleHomeTouch(true, 116 + 20, 58 + 20);
+  hostInjectTouch(false, 0, 0);
+
+  CHECK_EQ(a2dp_source.startCount, 1);
+  CHECK(btInitialized);
+  // ...with a state callback registered, so the stack actually reports states.
+  a2dp_source.hostPostAudioState(ESP_A2D_AUDIO_STATE_STARTED);
+  CHECK_EQ(audioStateNow(), (int)ESP_A2D_AUDIO_STATE_STARTED);
+  // Put the stub back: a real stack reports SUSPEND until the sink starts the
+  // stream, and the checks below are about that pre-stream window.
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);
+  // Bluetooth modem sleep is switched off while streaming: Espressif documents
+  // it as a cause of audio glitches.
+  CHECK(hostBtSleepDisabled());
+  // The passthrough handler was in place before the stack came up, so the
+  // library initialises its AVRCP target.
+  CHECK(a2dp_source.startAfterPassthru);
+  CHECK(a2dp_source.is_passthru_active());
+  // ...and the ring is left unallocated for the connection window.
+  CHECK(audioRingBuffer == nullptr);
+  CHECK_EQ(currentState, STATE_MUSIC);
+
+  // Connect + settle: now the ring is taken back, and only then.
+  a2dp_source.set_connected(true);
+  hostSetMillisStep(0);
+  hostSetMillis(2000);
+  audioRingService();
+  CHECK(audioRingBuffer == nullptr);   // inside the settling window
+  hostSetMillis(6000);                 // 4 s after the connection was first seen
+  audioRingService();
+  CHECK(audioRingBuffer != nullptr);
+
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // With earbud buttons switched off the AVRCP target is not brought up at all:
+  // no passthrough handler (which is what makes the library initialise it), so
+  // the stock library path runs and no memory is spent on the target.
+  a2dp_source.hostResetPassthru();
+  earbudControlsPrepareResetForTest();
+  prefs.putBool("earbud", false);
+  earbudControlsPrepare();
+  CHECK(a2dp_source.passthruCallback() == nullptr);
+  CHECK(!a2dp_source.is_passthru_active());
+  CHECK_EQ(a2dp_source.rnEventsRef().size(), (size_t)0);
+  btInitialized = true;
+  a2dp_source.set_connected(true);
+  hostAvrc.reset();
+  hostAvrc.registered = nullptr;
+  earbudControlsPoll();
+  CHECK(hostAvrc.registered == nullptr);   // the library keeps its own target
+
+  prefs.putBool("earbud", true);
+  earbudControlsSetEnabled(true);
+  btInitialized = wasBt;
+  hostSetFreeHeap(200000);
+}
+
+// The post-connect reserve must be small enough to actually allocate on this
+// board (the stack owns most of the heap by then) and big enough to leave the
+// stream room.  This is the gate that left the user with silence.
+// ===========================================================================
+// Link telemetry: the counters that tell the app's rate from the radio's
+// ===========================================================================
+// The stutter on hardware came with the Bluetooth stack pulling only ~116 KB/s
+// from the data callback instead of the ~172 KB/s an A2DP source needs.  These
+// checks pin the counters that report it, so a future log says which side is
+// short: "out" (the stack is being throttled by the air) or "fed" (the SD side).
+// ===========================================================================
+// Stream state tracking + link recovery
+// ===========================================================================
+static void testLinkRecovery() {
+  audioSetSourceDirect(false);   // ring path
+  SUITE("link recovery");
+  // The state reading must come from a callback the stack actually calls: the
+  // library's own copy stays at its default otherwise, which is what made the
+  // "state 0" in the hardware log meaningless.
+  audioStateCallback(ESP_A2D_AUDIO_STATE_STARTED, nullptr);
+  CHECK_EQ(audioStateNow(), (int)ESP_A2D_AUDIO_STATE_STARTED);
+  audioStateCallback(ESP_A2D_AUDIO_STATE_SUSPEND, nullptr);
+  CHECK_EQ(audioStateNow(), (int)ESP_A2D_AUDIO_STATE_SUSPEND);
+
+  audioRingBuffer = (uint8_t *)malloc(1024);
+  memset(audioRingBuffer, 0, 1024);
+  audioRingBytes = 1024;
+  audioSystemReady = true;
+  btInitialized = true;
+  isPlaying = true;
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_STARTED);
+  a2dp_source.endCount = 0;
+  a2dp_source.startCount = 0;
+  hostSetMillis(0);
+  hostSetMillisStep(0);
+  audioStatsReset();
+  audioLinkRecoveryReset();
+  hostMediaCtrlSuspendCount() = 0;
+  hostMediaCtrlStartCount() = 0;
+
+  Frame buf[128];
+  unsigned long t = 0;
+  // Feed a trickle for 32 s: the verdict accumulates "behind" as it goes.
+  auto starveWindow = [&](unsigned long ms) {
+    unsigned long end = t + ms;
+    while (t + 8000 <= end) {
+      t += 8000;
+      hostSetMillis(t);
+      for (int i = 0; i < 8; i++) get_audio_data(buf, 128);   // 4 KB per 8 s
+      audioLogStatsIfDue();
+    }
+  };
+  starveWindow(32000);
+  CHECK(audioLinkBehind());
+  CHECK(audioLinkBehindMs() >= LINK_BEHIND_MS);
+
+  // Stage 1: a media-level restart, which does NOT drop the Bluetooth link.
+  CHECK(audioLinkRecoveryService());
+  CHECK_EQ(hostMediaCtrlSuspendCount(), 1);
+  CHECK_EQ(hostMediaCtrlStartCount(), 1);
+  CHECK_EQ(a2dp_source.endCount, 0);            // no disconnect yet
+  CHECK_EQ(audioLinkBehindMs(), 0UL);           // judged afresh from here
+
+  // The link is still throttled, so the second gentle attempt goes next.
+  starveWindow(32000);
+  t += LINK_RECOVER_GAP_MS;
+  hostSetMillis(t);
+  CHECK(audioLinkRecoveryService());
+  CHECK_EQ(hostMediaCtrlSuspendCount(), 2);
+  CHECK_EQ(a2dp_source.endCount, 0);
+
+  // Two gentle attempts done: the next action is the full session rebuild.
+  starveWindow(32000);
+  t += LINK_RECOVER_GAP_MS;
+  hostSetMillis(t);
+  CHECK(audioLinkRecoveryService());
+  CHECK_EQ(a2dp_source.endCount, 1);
+  CHECK_EQ(a2dp_source.startCount, 1);
+  CHECK_EQ(audioLinkRebuildCount(), 1);
+
+  // Rebuilds are rare and capped, whatever the link does.
+  for (int i = 0; i < 6; i++) {
+    starveWindow(32000);
+    t += LINK_RECOVER_GAP_MS + LINK_REBUILD_GAP_MS;
+    hostSetMillis(t);
+    audioLinkRecoveryService();
+  }
+  CHECK(audioLinkRebuildCount() <= LINK_MAX_REBUILDS);
+
+  // A link that keeps up is never acted on.
+  audioLinkRecoveryReset();
+  hostMediaCtrlSuspendCount() = 0;
+  a2dp_source.endCount = 0;
+  audioStatsReset();
+  for (int win = 0; win < 5; win++) {
+    for (int i = 0; i < 344 * 8; i++) get_audio_data(buf, 128);   // real time
+    t += 8000;
+    hostSetMillis(t);
+    audioLogStatsIfDue();
+  }
+  CHECK(!audioLinkBehind());
+  CHECK(!audioLinkRecoveryService());
+  CHECK_EQ(hostMediaCtrlSuspendCount(), 0);
+  CHECK_EQ(a2dp_source.endCount, 0);
+
+  // Not while paused either: nothing is being streamed, so nothing is behind.
+  isPlaying = false;
+  CHECK(!audioLinkRecoveryService());
+  CHECK_EQ(a2dp_source.endCount, 0);
+
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  audioSystemReady = false;
+  btInitialized = false;
+  isPlaying = false;
+  audioStateCallback(ESP_A2D_AUDIO_STATE_SUSPEND, nullptr);
+  audioLinkRecoveryReset();
+  hostSetFreeHeap(200000);
+}
+
+static void testAudioOutTelemetry() {
+  audioSetSourceDirect(false);   // ring path
+  SUITE("audio out telemetry");
+  // A ring with data in it, and the callback called the way the stack does it.
+  audioRingBuffer = (uint8_t *)malloc(1024);
+  memset(audioRingBuffer, 0, 1024);
+  audioRingBytes = 1024;
+  audioSystemReady = true;
+  btInitialized = true;
+  isPlaying = true;
+  ringHead = 768;
+  ringTail = 0;
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_STARTED);
+  hostSetMillis(0);
+  hostSetMillisStep(0);
+  audioStatsReset();
+  CHECK_EQ(audioOutBytes(), 0);
+
+  // The stack asks for 512 bytes at a time.  Here it gets a trickle: 4 KB in
+  // each 8 second judging window, about a tenth of real time.
+  Frame buf[128];
+  unsigned long t = 0;
+  for (int win = 0; win < 3; win++) {
+    for (int i = 0; i < 8; i++) get_audio_data(buf, 128);   // 4 KB
+    t += 8000;
+    hostSetMillis(t);
+    audioLogStatsIfDue();                                   // drives the verdict
+  }
+  CHECK_EQ(audioOutBytes(), 24 * 512);
+  CHECK_EQ(audioOutCalls(), 24);
+  CHECK(audioLinkBehind());
+  CHECK(audioLinkBehindMs() >= 8000);
+
+  // The telemetry line must not disturb the verdict: reporting is not judging.
+  unsigned long behindBefore = audioLinkBehindMs();
+  audioLogStats("test");
+  CHECK_EQ(audioOutKBps(), 0);                          // the report window restarted
+  CHECK(audioLinkBehindMs() >= behindBefore);           // the verdict did not
+
+  // Real time is 344 calls of 512 B per second = 172 KiB/s (176,128 B/s): not
+  // behind.
+  audioStatsReset();
+  for (int win = 0; win < 3; win++) {
+    for (int i = 0; i < 344 * 8; i++) get_audio_data(buf, 128);
+    t += 8000;
+    hostSetMillis(t);
+    audioLogStatsIfDue();
+  }
+  CHECK_EQ(audioOutKBps(), 172);
+  CHECK(!audioLinkBehind());
+  CHECK_EQ(audioLinkBehindMs(), 0UL);
+
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  isPlaying = false;
+  hostSetFreeHeap(200000);
+}
+
+static void testLazyRing() {
+  audioSetSourceDirect(false);   // ring path
+  SUITE("lazy ring");
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  bool wasReady = audioSystemReady;
+  bool wasBt = btInitialized;
+
+  hostSetFreeHeap(BT_MIN_HEAP + 40000);
+  audioSystemReady = false;
+  btInitialized = false;
+  a2dp_source.set_connected(false);
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);   // as before connecting
+  hostSetMillis(0);
+  audioRingServiceReset();
+
+  // A track opened the way the music app does it: the file is ready, the ring is
+  // the only thing missing.
+  SD.reset();
+  hostMakeWav("/ready.wav", 1);
+  sdReady = true;
+  numTracks = 1;
+  playlist[0] = "ready.wav";
+  playTrack(0);
+  isPlaying = false;
+
+  // Before the stack is up: nothing.
+  audioRingService();
+  CHECK(audioRingBuffer == nullptr);
+
+  // Stack up, nothing connected: still nothing - the connect setup gets the heap.
+  audioSystemReady = true;
+  btInitialized = true;
+  audioRingService();
+  CHECK(audioRingBuffer == nullptr);
+
+  // Connected, but inside the settling window: still nothing.
+  a2dp_source.set_connected(true);
+  hostSetMillis(1000);
+  audioRingService();
+  CHECK(audioRingBuffer == nullptr);
+  CHECK(!isPlaying);                // nothing plays without a ring
+  hostSetMillis(4000);              // 3 s after the connection was first seen
+  audioRingService();
+  CHECK(audioRingBuffer != nullptr);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
+  // ...and the moment the ring exists, the player starts: the track was opened
+  // before the connection, so the ring was the only thing left to wait for.
+  CHECK(isPlaying);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // An already-streaming link skips the wait: audio is wanted now.
+  a2dp_source.set_connected(false);
+  hostSetMillis(9000);
+  audioRingService();
+  a2dp_source.set_connected(true);
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_STARTED);
+  audioRingService();
+  CHECK(audioRingBuffer != nullptr);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // A second call must not allocate twice.
+  a2dp_source.set_connected(true);
+  hostSetMillis(20000);
+  audioRingService();
+  uint8_t *first = audioRingBuffer;
+  audioRingService();
+  CHECK(audioRingBuffer == first);
+
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  audioSystemReady = wasReady;
+  btInitialized = wasBt;
+  a2dp_source.set_connected(false);
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);
+  hostSetFreeHeap(200000);
+}
+
+static void testRingSizing() {
+  audioSetSourceDirect(false);   // ring path
+  SUITE("ring sizing");
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Ample heap: the preferred size.
+  hostSetFreeHeap(BT_MIN_HEAP + 40000);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), RING_BUF_SIZE);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
+  CHECK(audioRingBuffer != nullptr);
+  for (int i = 0; i < 64; i++) CHECK_EQ(audioRingBuffer[i], 0);   // zeroed
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Enough for the middle size but not the preferred one: step down instead of
+  // eating the margin the Bluetooth stack allocates its own queues from.
+  hostSetFreeHeap(BT_MIN_HEAP + 14000);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), RING_BUF_SIZE_ALT);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE_ALT);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Only the smallest ring still leaves the stack its floor.
+  hostSetFreeHeap(BT_MIN_HEAP + 9000);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), RING_BUF_SIZE_MIN);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Nothing fits: report it instead of starting Bluetooth into a heap that
+  // cannot hold its queues.
+  hostSetFreeHeap(BT_MIN_HEAP + 1000);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), 0);
+  CHECK(audioRingBuffer == nullptr);
+  hostSetFreeHeap(200000);
+}
+
+// The post-connect reserve must be small enough to actually allocate on this
+// board (the stack owns most of the heap by then) and big enough to leave the
+// stream room.  This is the gate that left the user with silence.
+static void testPostConnectReserve() {
+  audioSetSourceDirect(false);   // ring path
+  SUITE("post-connect reserve");
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // The heap the hardware actually had once the earbuds were connected (43860
+  // free): the biggest ring that keeps the post-connect reserve wins.
+  hostSetFreeHeap(43860);
+  CHECK_EQ(allocAudioRing(RING_RESERVE_POST_CONNECT, true), RING_BUF_SIZE);
+  CHECK_EQ(audioRingBytes, RING_BUF_SIZE);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // Tighter: the 12 KB ring still leaves the reserve.
+  hostSetFreeHeap(33000);
+  CHECK_EQ(allocAudioRing(RING_RESERVE_POST_CONNECT, true), RING_BUF_SIZE_ALT);
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+
+  // The same heap, judged by the pre-start floor: nothing fits, which is exactly
+  // the bug - the ring has to be sized against the reserve that applies.
+  hostSetFreeHeap(43860);
+  CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), 0);
+  hostSetFreeHeap(200000);
+}
+
+// ===========================================================================
+// Direct SD audio path (what the older, working builds did)
+// ===========================================================================
+// The audio callback reads the file itself: no ring, no feeder task, no extra
+// heap.  These checks pin the behaviour that matters - the bytes handed to the
+// stack are the file's own bytes, a short read ends the track once, the gain
+// applies, and the callback never touches a file the main loop is swapping.
+static void testDirectAudio() {
+  SUITE("direct audio");
+  audioSetSourceDirect(true);
+  CHECK(audioSourceDirect());
+  bool wasReady = audioSystemReady;
+  bool wasBt = btInitialized;
+
+  SD.reset();
+  hostMakeWav("/direct.wav", 1);              // 1 s of 440 Hz stereo @ 44.1 kHz
+  sdReady = true;
+  numTracks = 1;
+  playlist[0] = "direct.wav";
+  audioSystemReady = true;
+  btInitialized = true;
+  currentVolume = 100;                        // gain 256: bytes pass through
+  applyVolume();
+  playTrack(0);
+  CHECK(audioFile);
+  CHECK(isPlaying);
+  CHECK_EQ(audioStreamPos, (uint32_t)0);
+
+  // Read a chunk the way the stack does and compare it with the file.
+  const int FRAMES = 128;                     // 512 bytes
+  Frame buf[FRAMES];
+  memset(buf, 0, sizeof(buf));
+  CHECK_EQ(get_audio_data(buf, FRAMES), FRAMES);
+  CHECK_EQ(audioStreamPos, (uint32_t)(FRAMES * 4));
+
+  File f = SD.open("/direct.wav");
+  WavInfo info = parseWavHeader(f);
+  uint8_t expect[FRAMES * 4];
+  CHECK(f.seek(info.dataStart));
+  CHECK_EQ(f.read(expect, sizeof(expect)), (size_t)sizeof(expect));
+  f.close();
+  CHECK(memcmp(buf, expect, sizeof(expect)) == 0);   // byte for byte
+
+  // The stream continues where it left off: the next chunk is the file's next
+  // bytes, not the first ones again.
+  File f2 = SD.open("/direct.wav");
+  parseWavHeader(f2);
+  f2.seek(info.dataStart + FRAMES * 4);
+  CHECK_EQ(f2.read(expect, sizeof(expect)), (size_t)sizeof(expect));
+  f2.close();
+  memset(buf, 0, sizeof(buf));
+  get_audio_data(buf, FRAMES);
+  CHECK(memcmp(buf, expect, sizeof(expect)) == 0);
+
+  // The gain is applied on the bytes actually read.  Rewind first, so the same
+  // file bytes are compared.
+  playTrack(0);
+  currentVolume = 50;                         // Q8 gain 128
+  applyVolume();
+  memset(buf, 0, sizeof(buf));
+  get_audio_data(buf, FRAMES);
+  File f3 = SD.open("/direct.wav");
+  parseWavHeader(f3);
+  f3.seek(info.dataStart);
+  CHECK_EQ(f3.read(expect, sizeof(expect)), (size_t)sizeof(expect));
+  f3.close();
+  int16_t *s = (int16_t *)buf;
+  for (int i = 0; i < 8; i++) {
+    int16_t want = (int16_t)(((int16_t *)expect)[i] * 128 >> 8);
+    CHECK_EQ(s[i], want);
+  }
+  currentVolume = 100;
+  applyVolume();
+
+  // No file open: silence, and the caller still gets a full buffer back.
+  File saved = audioFile;
+  audioFile = File();
+  memset(buf, 1, sizeof(buf));
+  CHECK_EQ(get_audio_data(buf, FRAMES), FRAMES);
+  for (int i = 0; i < FRAMES; i++) CHECK_EQ(buf[i].channel1, (int16_t)0);
+  audioFile = saved;
+
+  // While the main loop swaps the file the callback must not touch it: silence
+  // for that instant, never a read from a half-closed handle.
+  audioSetFileBusyForTest(true);
+  memset(buf, 1, sizeof(buf));
+  uint32_t posBefore = audioStreamPos;
+  CHECK_EQ(get_audio_data(buf, FRAMES), FRAMES);
+  CHECK_EQ(audioStreamPos, posBefore);
+  for (int i = 0; i < FRAMES; i++) CHECK_EQ(buf[i].channel1, (int16_t)0);
+  audioSetFileBusyForTest(false);
+
+  // Drain the rest of the file: the short read at the end zero-fills and asks
+  // the main loop to advance exactly once.
+  trackFinished = false;
+  fileReadDone = false;
+  int guard = 0;
+  while (!trackFinished && guard++ < 100000) get_audio_data(buf, FRAMES);
+  CHECK(trackFinished);
+  CHECK(fileReadDone);
+  trackFinished = false;
+  memset(buf, 1, sizeof(buf));
+  get_audio_data(buf, FRAMES);                // past the end: silence, still full
+  for (int i = 0; i < FRAMES; i++) CHECK_EQ(buf[i].channel1, (int16_t)0);
+
+  // Reopening resets the end-of-file flags for the next track.
+  playTrack(0);
+  CHECK(!fileReadDone);
+  CHECK(isPlaying);
+
+  audioFile.close();
+  audioFile = File();
+  isPlaying = false;
+  audioSystemReady = wasReady;
+  btInitialized = wasBt;
+  audioSetSourceDirect(false);
+}
+
+static void testHttpDate() {
+  SUITE("http date");
+  // A Date header is GMT, so it must agree with the C library's own UTC
+  // conversion.  This is what the clock is set from when NTP is blocked.
+  time_t want = utcEpoch(2026, 9, 29, 12, 34, 56);
+  CHECK_EQ(parseHttpDate(" Sun, 29 Sep 2026 12:34:56 GMT"), want);
+  CHECK_EQ(parseHttpDate("29 Sep 2026 12:34:56 GMT"), want);           // no weekday
+  CHECK_EQ(parseHttpDate("Mon, 28 Sep 2026 12:34:56 GMT"), want - 86400);
+  CHECK_EQ(parseHttpDate("Sun, 29 SEP 2026 12:34:56 GMT"), want);     // case is not fixed
+
+  CHECK_EQ(parseHttpDate("Thu, 29 Feb 2024 00:00:00 GMT"), utcEpoch(2024, 2, 29, 0, 0, 0));   // leap day
+  CHECK_EQ(parseHttpDate("Thu, 01 Jan 2026 00:00:00 GMT"), utcEpoch(2026, 1, 1, 0, 0, 0));    // year rollover
+
+  // Nonsense must be refused, never turned into a clock that looks plausible.
+  CHECK_EQ(parseHttpDate("garbage"), 0);
+  CHECK_EQ(parseHttpDate("Sun, 29 Foo 2026 12:34:56 GMT"), 0);
+  CHECK_EQ(parseHttpDate("Sun, 32 Sep 2026 12:34:56 GMT"), 0);
+  CHECK_EQ(parseHttpDate("Sun, 29 Sep 1996 12:34:56 GMT"), 0);
+  CHECK_EQ(parseHttpDate("Sunday, Sep 29 2026 12:34:56 GMT"), 0);
+  CHECK_EQ(parseHttpDate(nullptr), 0);
+}
+
+static void testWifiSync() {
+  SUITE("wifi sync");
+  bool wasBt = btInitialized;
+  bool wasSynced = timeSynced;
+
+  // A Bluetooth session owns the radio; the sync refuses instead of fighting it.
+  WiFi.hostReset();
+  hostWifiStopReset();
+  btInitialized = true;
+  hostSetClock(0);
+  hostSetMillis(0);
+  hostSetMillisStep(0);
+  CHECK(!syncTimeNTP(true));
+  CHECK_EQ(WiFi.hostBegins(), 0);
+  CHECK_EQ(hostWifiStopCount(), 0);
+  btInitialized = false;
+
+  // The access point ignores the first probe and answers the second.
+  WiFi.hostReset();
+  hostWifiStopReset();
+  WiFi.hostAnswerOnBegin(2);
+  hostSetClock(1780000000);                  // a valid RTC is enough for NTP here
+  hostSetMillis(0);
+  hostSetMillisStep(1000);
+  CHECK(syncTimeNTP(true));
+  CHECK_EQ(WiFi.hostBegins(), 2);            // a single 8 second window is not enough
+  CHECK(WiFi.hostDisconnects() >= 2);        // failed attempt + teardown
+  // Never esp_wifi_stop(): hard-stopping the WiFi driver in the same boot as a
+  // Bluetooth start trips an internal assert when audio begins streaming.
+  CHECK_EQ(hostWifiStopCount(), 0);
+  timeSynced = wasSynced;
+
+  // No access point at all: give up after the retries, with the radio off.
+  WiFi.hostReset();
+  hostWifiStopReset();
+  WiFi.hostAnswerOnBegin(0);
+  hostSetClock(0);
+  hostSetMillis(0);
+  CHECK(!syncTimeNTP(true));
+  CHECK_EQ(WiFi.hostBegins(), 2);
+  CHECK(WiFi.hostDisconnects() >= 2);
+  CHECK(!timeSynced);
+
+  // WiFi connects, NTP never answers: the message has to point at NTP.
+  WiFi.hostReset();
+  hostWifiStopReset();
+  WiFi.hostAnswerOnBegin(1);
+  hostSetMillis(0);
+  CHECK(!syncTimeNTP(true));
+  CHECK_EQ(WiFi.hostBegins(), 1);
+  CHECK(!timeSynced);
+  CHECK_EQ(hostWifiStopCount(), 0);
+
+  // NTP never answers but HTTP does: the Date header sets the clock, which is
+  // the only way a network that blocks NTP can still get the time.
+  WiFi.hostReset();
+  hostWifiStopReset();
+  WiFi.hostAnswerOnBegin(1);
+  hostSetClock(0);
+  hostSetMillis(0);
+  hostSetMillisStep(1000);
+  hostHttpResponse() = "HTTP/1.0 204 No Content\r\nDate: Tue, 29 Sep 2026 12:34:56 GMT\r\n\r\n";
+  CHECK(syncTimeNTP(true));
+  CHECK(timeSynced);
+  CHECK_EQ((long)time(nullptr), (long)utcEpoch(2026, 9, 29, 12, 34, 56));
+  CHECK_EQ(WiFi.hostLookups(), 3);                 // one name lookup per server
+  CHECK(hostHttpRequest().find("GET /") == 0);
+  // The first target is reached by IP: no DNS, no UDP 123.
+  CHECK(hostHttpRequest().find("Host: one.one.one.one") != std::string::npos);
+  CHECK_EQ(hostWifiStopCount(), 0);
+  // The source that worked is remembered, so the next sync does not have to sit
+  // through NTP timeouts again.
+  CHECK_EQ(prefs.getInt("timesrc", -1), 1);
+
+  // With HTTP remembered as the working source it is tried first, and it still
+  // sets the clock.
+  WiFi.hostReset();
+  WiFi.hostAnswerOnBegin(1);
+  hostSetClock(0);
+  timeSynced = false;
+  hostHttpResponse() = "HTTP/1.0 204 No Content\r\nDate: Tue, 29 Sep 2026 12:34:56 GMT\r\n\r\n";
+  CHECK(syncTimeNTP(false));
+  CHECK_EQ((long)time(nullptr), (long)utcEpoch(2026, 9, 29, 12, 34, 56));
+  CHECK(hostHttpConnectCount() >= 1);
+
+  // ...and when HTTP stops working the preference flips back to NTP instead of
+  // pinning a dead source.
+  WiFi.hostReset();
+  WiFi.hostAnswerOnBegin(1);
+  hostSetClock(1780000000);                 // NTP answers this time
+  timeSynced = false;
+  hostHttpConnectOk() = false;
+  CHECK(syncTimeNTP(false));
+  CHECK_EQ(prefs.getInt("timesrc", -1), 0);
+
+  hostHttpConnectOk() = true;
+  prefs.putInt("timesrc", 0);
+
+  WiFi.hostReset();
+  hostSetMillisStep(0);
+  hostSetClock(-1);
+  btInitialized = wasBt;
+  timeSynced = wasSynced;
+}
+
+static void testPersistence() {
+  SUITE("persistence");
+  resetPomodoroState();
+
+  addPomoTask("Deep work");
+  addPomoTask("Inbox");
+  adjustPomoTaskTarget(1, 3);
+  togglePomoTaskDone(1);
+  pomoActiveTask = 1;
+  pomoWorkTime = 40 * 60;
+  pomoLongEvery = 5;
+  pomoDailyGoal = 10;
+  pomoAutoStart = true;
+  pomoRecordWorkBlock(25 * 60, true);
+  savePomoSettings();
+  savePomoTasks();
+
+  // Simulate a reboot: clear the RAM copy and load it back.
+  for (int i = 0; i < MAX_POMO_TASKS; i++) pomoTasks[i] = PomoTask();
+  pomoActiveTask = -1;
+  int goalBefore = pomoDailyGoal;
+  loadPomoStore();
+
+  CHECK_EQ(pomoDailyGoal, goalBefore);
+  CHECK(pomoAutoStart);
+  CHECK_EQ(pomoWorkTime, 40 * 60);
+  CHECK_EQ(pomoLongEvery, 5);
+  CHECK(pomoTasks[0].in_use && pomoTasks[1].in_use);
+  CHECK_EQ(pomoTasks[1].target, 4);
+  CHECK(pomoTasks[1].done);
+  CHECK_EQ(pomoActiveTask, 1);
+  CHECK_EQ(pomoStatBlocks(pomoTodayDay()), 1);
+  CHECK_EQ(pomoStatMinutes(pomoTodayDay()), 25);
+
+  // Timer state survives a reboot too, and comes back paused.
+  pomoApplyMode(MODE_WORK);
+  pomoSeconds = 600;
+  pomoPhaseTotal = 1500;
+  pomoRunning = true;
+  pomoSaveTimerState();
+  pomoSeconds = 0;
+  pomoMode = MODE_LONG_BREAK;
+  pomoLoadTimerState();
+  CHECK_EQ(pomoSeconds, 600);
+  CHECK_EQ(pomoMode, MODE_WORK);
+  CHECK_EQ(pomoPhaseTotal, 1500);
+  CHECK(!pomoRunning);
+
+  // Dots never over-fill when the cycle length is shortened.
+  pomodorosCompleted = 6;
+  pomoLongEvery = 4;
+  pomoApplyMode(MODE_WORK);
+  CHECK(pomodorosCompleted < pomoLongEvery);
+}
+
+// ===========================================================================
+// rendering smoke tests: every page of every app must draw without straying
+// ===========================================================================
+static void testRendering() {
+  SUITE("rendering");
+  resetPomodoroState();
+
+  struct Shot { const char *name; std::function<void()> draw; };
+  std::vector<Shot> shots;
+
+  shots.push_back({"01-home", []() { currentState = STATE_HOME; drawHomeScreen(); }});
+  shots.push_back({"02-music", []() { currentState = STATE_MUSIC; drawMusicScreen(true); }});
+  shots.push_back({"03-graph", []() { currentState = STATE_GRAPH; drawGraphScreen(true); }});
+  shots.push_back({"04-keyboard", []() {
+                     currentState = STATE_POINT_KBD;
+                     pointInput = "2m,3";
+                     pointCursor = 4;
+                     pointKbAlpha = false;
+                     drawPointKeyboardScreen();
+                   }});
+  shots.push_back({"04b-keyboard-alpha", []() {
+                     currentState = STATE_POINT_KBD;
+                     pointInput = "a,b";
+                     pointCursor = 3;
+                     pointKbAlpha = true;
+                     drawPointKeyboardScreen();
+                   }});
+  shots.push_back({"05-textinput", []() {
+                     currentState = STATE_TEXT_KBD;
+                     startTextInput("NEW TASK", "Deep work", TEXT_TARGET_TASK, POMO_NAME_LEN);
+                     drawTextKeyboardScreen(true);
+                   }});
+  shots.push_back({"06-settings", []() { currentState = STATE_SETTINGS; drawSettingsScreen(); }});
+  shots.push_back({"06b-settings-led", []() {
+                     currentState = STATE_SETTINGS;
+                     settingsPageForTest() = 1;
+                     drawSettingsScreen();
+                     settingsPageForTest() = 0;
+                   }});
+  shots.push_back({"07-calibration", []() { currentState = STATE_CALIBRATE; drawCalibrationScreen(); }});
+
+  for (auto &s : shots) {
+    HostDraw::reset();
+    s.draw();
+    CHECK(!HostDraw::log().empty());
+    HostDraw::dump((std::string("shots/") + s.name + ".txt").c_str());
+  }
+
+  // Pomodoro views with content, including the overflowing task list.
+  resetPomodoroState();
+  for (int i = 0; i < MAX_POMO_TASKS; i++) {
+    pomoTasks[i].text = String("Task number ") + String(i + 1);
+    pomoTasks[i].in_use = 1;
+    pomoTasks[i].target = 1 + (i % 3);
+    pomoTasks[i].blocks = i % 2;
+    pomoTasks[i].done = (i % 4 == 0);
+  }
+  pomoTasks[2].blocks = 3;
+  pomoActiveTask = 2;
+  for (int i = 0; i < MAX_POMO_TEMPLATES; i++) {
+    pomoTemplates[i].name = String("Routine ") + String(i + 1);
+    pomoTemplates[i].in_use = 1;
+    pomoTemplates[i].work = 25 * 60;
+    pomoTemplates[i].shortBreak = 5 * 60;
+    pomoTemplates[i].longBreak = 15 * 60;
+    pomoTemplates[i].cycles = 4;
+  }
+  for (int d = 0; d < 30; d++) {
+    pomoHistory[pomoHistoryCount].in_use = 1;
+    pomoHistory[pomoHistoryCount].day = pomoTodayDay() - (29 - d);
+    pomoHistory[pomoHistoryCount].minutes = (d * 7) % 95;
+    pomoHistory[pomoHistoryCount].blocks = (d % 4);
+    pomoHistoryCount++;
+  }
+  for (int h = 0; h < 24; h++) pomoHourly[h] = (h % 7) == 0 ? 25 : 0;
+  pomoDailyGoal = 8;
+  pomoApplyMode(MODE_WORK);
+  pomoRunning = true;
+  pomoSeconds = pomoPhaseTotal - 300;
+
+  struct PShot { const char *name; PomoView view; StatsTab tab; int scroll; };
+  PShot pshots[] = {
+      {"08-pomo-timer", POMO_VIEW_TIMER, STATS_DAY, 0},
+      {"09-pomo-tasks", POMO_VIEW_TASKS, STATS_DAY, 0},
+      {"10-pomo-tasks-scrolled", POMO_VIEW_TASKS, STATS_DAY, 0},
+      {"11-pomo-presets", POMO_VIEW_PRESETS, STATS_DAY, 0},
+      {"12-pomo-presets-scrolled", POMO_VIEW_PRESETS, STATS_DAY, 0},
+      {"13-pomo-day", POMO_VIEW_STATS, STATS_DAY, 0},
+      {"14-pomo-week", POMO_VIEW_STATS, STATS_WEEK, 0},
+      {"15-pomo-month", POMO_VIEW_STATS, STATS_MONTH, 0},
+  };
+  for (auto &ps : pshots) {
+    pomoView = ps.view;
+    statsTab = ps.tab;
+    pomoScrollReset();
+    HostDraw::reset();
+    drawPomodoroScreen(true);
+    CHECK(!HostDraw::log().empty());
+    // The scrolled variant puts the tail of the page on screen.
+    if (ps.scroll || std::string(ps.name).find("scrolled") != std::string::npos) {
+      pomoScrollY = pomoScrollMax;
+      HostDraw::reset();
+      drawPomodoroScreen(true);
+    }
+    HostDraw::dump((std::string("shots/") + ps.name + ".txt").c_str());
+    // Nothing may be drawn outside the 320x240 panel.
+    for (auto &line : HostDraw::log()) {
+      int x, y, w, h;
+      if (sscanf(line.c_str(), "fillRect %d %d %d %d", &x, &y, &w, &h) == 4) {
+        // Every rectangle must at least touch the panel and must not be bigger
+        // than it: nothing may be drawn purely off screen (that would waste SPI
+        // traffic) and no call may be larger than the display.
+        bool touches = (x + w > 0) && (y + h > 0) && (x < 320) && (y < 240);
+        bool fits = (w <= 320) && (h <= 240) && w > 0 && h > 0;
+        if (!touches || !fits) {
+          failures++;
+          printf("  OOB [%s] -> %d %d %d %d\n", ps.name, x, y, w, h);
+        }
+        checks++;
+      }
+    }
+  }
+
+  // Home once more at the end, so the shot always reflects the final tile row.
+  currentState = STATE_HOME;
+  HostDraw::reset();
+  drawHomeScreen();
+  HostDraw::dump("shots/01-home.txt");
+  HostDraw::reset();
+
+  // The name keyboard in both modes: the letter page is QWERTY and the number
+  // page holds the digits and punctuation.
+  currentState = STATE_TEXT_KBD;
+  textKbNumeric = false;
+  startTextInput("NEW TASK", "Deep work", TEXT_TARGET_TASK, POMO_NAME_LEN);
+  HostDraw::reset();
+  drawTextKeyboardScreen(true);
+  HostDraw::dump("shots/16-text-keyboard.txt");
+  textKbNumeric = true;
+  HostDraw::reset();
+  drawTextKeyboardScreen(true);
+  HostDraw::dump("shots/17-text-keyboard-123.txt");
+  textKbNumeric = false;
+}
+
+int main() {
+  system("mkdir -p shots");
+  printf("== host checks ==\n");
+  testCountdown();
+  testTaskList();
+  testScrolling();
+  testKeyboard();
+  testCalibration();
+  testEarbuds();
+  testLed();
+  testGraphZoom();
+  testAudio();
+  testDirectAudio();
+  testHttpDate();
+  testRingSizing();
+  testPostConnectReserve();
+  testLinkRecovery();
+  testAudioOutTelemetry();
+  testLazyRing();
+  testMusicStart();
+  testWifiSync();
+  testPomodoroDates();
+  testPersistence();
+  testRendering();
+
+  printf("\n%d checks, %d failures\n", checks, failures);
+  if (failures == 0) printf("ALL CHECKS PASSED (0 failures)\n");
+  return failures == 0 ? 0 : 1;
+}

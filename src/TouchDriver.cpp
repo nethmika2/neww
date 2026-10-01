@@ -1,4 +1,5 @@
 #include "TouchDriver.h"
+#include <math.h>
 #include "Globals.h"
 
 void SoftTouch::begin() {
@@ -51,7 +52,24 @@ uint16_t SoftTouch::readCmd(uint8_t cmd) {
   return val;
 }
 
+#ifdef HOSTCHECK
+// Host build only: the tests drive the panel instead of the panel driving the
+// code, so a press-and-hold control can be exercised (the harness has no real
+// touch hardware).  The values live in the stubs.
+bool hostTouchSimulated();
+int hostTouchXValue();
+int hostTouchYValue();
+#endif
+
 bool SoftTouch::touched() {
+#ifdef HOSTCHECK
+  // The simulated finger is the only touch there is on the host: the bit-banged
+  // path below would read the stubbed zeroed MISO line as a permanent press,
+  // which would make "tap to skip" cancel every wait in the tests.
+  if (!hostTouchSimulated()) return false;
+  last = TS_Point(hostTouchXValue(), hostTouchYValue(), 1000);
+  return true;
+#endif
   int z = readZ();
   if (z < TOUCH_Z_MIN) return false;
 
@@ -87,10 +105,46 @@ TS_Point SoftTouch::getPoint() {
   return last;
 }
 
+// Samples the panel and converts to calibrated screen pixels, exactly as the
+// main loop does.  Controls that read the touch themselves (a press-and-hold
+// button) must use this so the 4 point calibration still applies.
+bool readCalibratedTouch(int& sx, int& sy) {
+  if (!ts.touched()) return false;
+  TS_Point p = ts.getPoint();
+  int x = 0, y = 0;
+  applyTouchCalibration(p, x, y);
+  sx = constrain(x, 0, 320);
+  sy = constrain(y, 0, 240);
+  return true;
+}
+
+// Waits for the finger to lift so one tap cannot trigger two actions.  The
+// loop is bounded: if the panel keeps reporting a touch (a stuck reading, a
+// ghost touch while charging) the UI must carry on instead of freezing.
 void waitTouchRelease() {
   unsigned long lastTouch = millis();
-  while (millis() - lastTouch < 40) {
+  for (int guard = 0; guard < 600; guard++) {
+    if (millis() - lastTouch >= 40) return;
     if (ts.touched()) lastTouch = millis();
     delay(2);
   }
+}
+
+// ==========================================
+// TOUCH MAPPING
+// ==========================================
+// The 4 point calibration stores an affine transform per axis, so the touch
+// panel does not have to be perfectly aligned with the display: rotation,
+// shear and a swapped axis pair are all absorbed by the coefficients.  Devices
+// calibrated by an older build fall back to the min/max mapping below.
+bool applyTouchCalibration(const TS_Point& raw, int& sx, int& sy) {
+  if (touchCalibrated) {
+    sx = constrain((int)lroundf(tcalX[0] * raw.x + tcalX[1] * raw.y + tcalX[2]), 0, 320);
+    sy = constrain((int)lroundf(tcalY[0] * raw.x + tcalY[1] * raw.y + tcalY[2]), 0, 240);
+    return true;
+  }
+  int hw_x = touch_swap_xy ? raw.y : raw.x, hw_y = touch_swap_xy ? raw.x : raw.y;
+  sx = constrain(map(hw_x, touch_x_min, touch_x_max, 0, 320), 0, 320);
+  sy = constrain(map(hw_y, touch_y_min, touch_y_max, 0, 240), 0, 240);
+  return false;
 }

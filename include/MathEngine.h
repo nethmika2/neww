@@ -7,11 +7,18 @@ bool isAlphaChar(char c);
 bool isVarChar(char c);
 
 String niceNum(double v);
+bool hasParamToken(const String& eq);
 void flagActiveVariables(String eq);
 void refreshActiveVariables();
 String fixEquation(String eq);
 void compileSlot(int i);
 bool parsePoint(String s, double& x, double& y);
+
+// Point entry (numbers, functions and parameter letters)
+bool compilePointInput(String s, te_expr*& cx, te_expr*& cy, String& left, String& right, bool& live);
+void freePointExprs(int idx);
+void rebuildPointExprs(int idx);
+bool evalPoint(int idx, double& x, double& y);
 
 int worldXToScreen(double wx);
 int worldYToScreen(double wy);
