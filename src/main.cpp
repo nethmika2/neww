@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_log.h>
 #include "Config.h"
 #include "Types.h"
 #include "Globals.h"
@@ -27,6 +28,11 @@ void setup() {
   delay(50);
   // First line of every boot: how much RAM the firmware left itself.  A number
   // far below ~200 KB is what slows the Bluetooth start down later.
+  // The Bluetooth stack reports link trouble through its own logger, once per
+  // 30 ms tick while the A2DP transmit queue is backed up ("Limit frms to send
+  // ..."), which turns the serial monitor into a firehose exactly when the
+  // audio stutters.  Our own lines are plain Serial.printf and stay.
+  esp_log_level_set("*", ESP_LOG_ERROR);
   Serial.printf("[I][boot] %s, free heap %u\n", FW_BUILD, (unsigned)ESP.getFreeHeap());
   // Backlight and the on-board RGB LED share the PWM setup: the backlight is
   // dimmable for the DIM idle mode, and the LED is the load that keeps a power
@@ -117,6 +123,18 @@ void setup() {
 void loop() {
   if (btInitialized) btConnected = a2dp_source.is_connected();
   audioRingService();
+
+  // Stream state changes are the other half of a stutter report: if the sink
+  // suspends and restarts the stream, it shows up here; if the state stays
+  // STARTED while the audio drops out, the loss is in the air, not in the app.
+  if (btInitialized) {
+    static int lastStreamState = -1;
+    int streamState = (int)a2dp_source.get_audio_state();
+    if (streamState != lastStreamState) {
+      lastStreamState = streamState;
+      Serial.printf("[I][bt] stream state %d at %lu ms\n", streamState, millis());
+    }
+  }
   // Earbud buttons are queued from the Bluetooth task and applied here.
   earbudControlsPoll();
 

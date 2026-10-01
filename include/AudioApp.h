@@ -24,6 +24,10 @@ uint32_t audioBytesFed();
 uint32_t audioStarveCount();
 uint32_t audioSilenceBytes();
 uint32_t audioFeederPasses();
+uint32_t audioOutBytes();      // bytes handed to the Bluetooth stack
+uint32_t audioOutCalls();      // data callbacks served
+uint32_t audioOutKBps();       // the above per second, since the last report
+bool audioLinkBehind();        // the stack is pulling well under real time
 void audioStatsReset();
 void audioLogStats(const char* why);
 void audioLogStatsIfDue();

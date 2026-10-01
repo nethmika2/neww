@@ -62,7 +62,7 @@
 
 // Wi-Fi & NTP Configuration
 // Printed on every boot so a serial log says which build is on the device.
-static const char* const FW_BUILD = "2026-10-01b (ring after connect, play when ready)";
+static const char* const FW_BUILD = "2026-10-01c (quiet serial, link telemetry)";
 
 static const char* const WIFI_SSID = "Dialog 4G New";
 static const char* const WIFI_PASS = "tgrd-0241320-";
@@ -135,7 +135,10 @@ static const char* const NTP_3 = "pool.ntp.org";
 #define RING_RESERVE_POST_CONNECT (20 * 1024)
 #define AUDIO_TEST_TONE 0
 // How often the [I][audio] telemetry line is printed while a track plays.
-#define AUDIO_LOG_PERIOD_MS 5000UL
+#define AUDIO_LOG_PERIOD_MS 30000UL
+// A healthy A2DP source pulls 44100*4 (about 172 KB/s) from the data callback.
+// Below this the transmit queue is backed up - the air link, not the app.
+#define AUDIO_LINK_WARN_KBPS 130
 
 #define SCREEN_TIMEOUT_MS 60000UL
 #define SAVER_OFF_MS 600000UL

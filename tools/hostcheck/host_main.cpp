@@ -12,6 +12,7 @@
 #include <time.h>
 #include <cmath>
 #include <string>
+#include "esp_bt.h"
 #include <vector>
 #include <functional>
 
@@ -1347,6 +1348,9 @@ static void testMusicStart() {
 
   CHECK_EQ(a2dp_source.startCount, 1);
   CHECK(btInitialized);
+  // Bluetooth modem sleep is switched off while streaming: Espressif documents
+  // it as a cause of audio glitches.
+  CHECK(hostBtSleepDisabled());
   // The passthrough handler was in place before the stack came up, so the
   // library initialises its AVRCP target.
   CHECK(a2dp_source.startAfterPassthru);
@@ -1395,6 +1399,58 @@ static void testMusicStart() {
 // The post-connect reserve must be small enough to actually allocate on this
 // board (the stack owns most of the heap by then) and big enough to leave the
 // stream room.  This is the gate that left the user with silence.
+// ===========================================================================
+// Link telemetry: the counters that tell the app's rate from the radio's
+// ===========================================================================
+// The stutter on hardware came with the Bluetooth stack pulling only ~116 KB/s
+// from the data callback instead of the ~172 KB/s an A2DP source needs.  These
+// checks pin the counters that report it, so a future log says which side is
+// short: "out" (the stack is being throttled by the air) or "fed" (the SD side).
+static void testAudioOutTelemetry() {
+  SUITE("audio out telemetry");
+  // A ring with data in it, and the callback called the way the stack does it.
+  audioRingBuffer = (uint8_t *)malloc(1024);
+  memset(audioRingBuffer, 0, 1024);
+  audioRingBytes = 1024;
+  audioSystemReady = true;
+  btInitialized = true;
+  isPlaying = true;
+  ringHead = 768;
+  ringTail = 0;
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_STARTED);
+  hostSetMillis(0);
+  hostSetMillisStep(0);
+  audioStatsReset();
+  CHECK_EQ(audioOutBytes(), 0);
+
+  // Sixteen 512 byte requests = 8 KB over 2 seconds = 4 KB/s.
+  Frame buf[128];
+  for (int i = 0; i < 16; i++) get_audio_data(buf, 128);
+  CHECK_EQ(audioOutBytes(), 16 * 512);
+  CHECK_EQ(audioOutCalls(), 16);
+  hostSetMillis(2000);
+  CHECK_EQ(audioOutKBps(), 4);
+  // 4 KB/s is nowhere near real time, so the link is flagged as the limit.
+  CHECK(audioLinkBehind());
+
+  // Real time (172 KB/s would be 344 calls of 512 B per second): not behind.
+  audioStatsReset();
+  for (int i = 0; i < 344; i++) get_audio_data(buf, 128);
+  hostSetMillis(3000);              // 1 s later
+  CHECK_EQ(audioOutKBps(), 172);
+  CHECK(!audioLinkBehind());
+
+  // An idle player is never "behind", however quiet the line is.
+  isPlaying = false;
+  CHECK(!audioLinkBehind());
+
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  isPlaying = false;
+  hostSetFreeHeap(200000);
+}
+
 static void testPostConnectReserve() {
   SUITE("post-connect reserve");
   audioRingBuffer = nullptr;
@@ -1886,6 +1942,7 @@ int main() {
   testHttpDate();
   testRingSizing();
   testPostConnectReserve();
+  testAudioOutTelemetry();
   testLazyRing();
   testMusicStart();
   testWifiSync();

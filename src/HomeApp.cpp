@@ -1,4 +1,5 @@
 #include "HomeApp.h"
+#include <esp_bt.h>
 #include "EarbudControls.h"
 #include "Globals.h"
 #include "DisplayUtils.h"
@@ -129,6 +130,11 @@ void handleHomeTouch(bool touched, int sx, int sy) {
       delay(50);
       a2dp_source.start(EARBUD_NAME, get_audio_data);
       delay(1200);
+      // The Bluetooth controller may park itself between events (modem sleep);
+      // Espressif documents that as a source of audio glitches, and an A2DP
+      // stream is exactly the case it hurts.  Keep it awake while we stream.
+      esp_err_t sleepErr = esp_bt_sleep_disable();
+      Serial.printf("[I][music] bt modem sleep off: %s\n", sleepErr == ESP_OK ? "ok" : "not supported");
       a2dp_source.set_volume(127);
       applyVolume();
       btInitialized = true;

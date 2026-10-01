@@ -28,6 +28,12 @@ int getRingBufferAvailableRead() {
 // while the feed rate is fine) or from nowhere (both healthy - then the stutter
 // is on the earbud side).
 static volatile uint32_t stBytesFed = 0;
+// What the Bluetooth stack pulled from us.  The A2DP source asks for 44100*4
+// bytes a second while the link is healthy, so this is the figure that says
+// whether a stutter is ours (low) or the radio's (the stack asking for less).
+static volatile uint32_t stOutBytes = 0;
+static volatile uint32_t stOutCalls = 0;
+static unsigned long stWindowStart = 0;
 static volatile uint32_t stStarve = 0;
 static volatile uint32_t stSilenceBytes = 0;
 static volatile uint32_t stPasses = 0;
@@ -40,9 +46,31 @@ uint32_t audioBytesFed() { return stBytesFed; }
 uint32_t audioStarveCount() { return stStarve; }
 uint32_t audioSilenceBytes() { return stSilenceBytes; }
 uint32_t audioFeederPasses() { return stPasses; }
+uint32_t audioOutBytes() { return stOutBytes; }
+uint32_t audioOutCalls() { return stOutCalls; }
+
+uint32_t audioOutKBps() {
+  unsigned long dt = millis() - stWindowStart;
+  if (dt == 0) return 0;
+  return (uint32_t)(((uint64_t)stOutBytes * 1000ULL) / ((uint64_t)dt * 1024ULL));
+}
+
+// True while the stack is pulling well under real time: the A2DP transmit queue
+// is backed up, which means the air link cannot drain it.  The earbuds starve in
+// cycles when this lasts, and it is not something the app can feed its way out
+// of - the radio is the limit.
+bool audioLinkBehind() {
+  if (!isPlaying || !btInitialized) return false;
+  unsigned long dt = millis() - stWindowStart;
+  if (dt < 2000) return false;
+  return audioOutKBps() < AUDIO_LINK_WARN_KBPS;
+}
 
 void audioStatsReset() {
   stBytesFed = 0;
+  stOutBytes = 0;
+  stOutCalls = 0;
+  stWindowStart = millis();
   stStarve = 0;
   stSilenceBytes = 0;
   stPasses = 0;
@@ -65,21 +93,37 @@ void audioLogStats(const char* why) {
   unsigned long dt = now - stLastLog;
   if (dt == 0) dt = 1;
   uint32_t fed = stBytesFed;
-  uint32_t kBps = (uint32_t)(((uint64_t)(fed - stLastLogBytes) * 1000ULL) / (dt * 1024ULL));
+  uint32_t fedKbps = (uint32_t)(((uint64_t)(fed - stLastLogBytes) * 1000ULL) / (dt * 1024ULL));
   int fill = 0;
   if (audioRingBuffer && audioRingBytes > 0) fill = (getRingBufferAvailableRead() * 100) / audioRingBytes;
-  Serial.printf("[I][audio] %s: fed %lu KB (%lu KB/s), ring %d%%, starve %lu (worst %d of %d B, %lu ms silence), feeder %lu/s, playing %d\n",
-                why, (unsigned long)(fed / 1024), (unsigned long)kBps, fill,
-                (unsigned long)stStarve, stLastStarveFree, stLastStarveNeed,
-                (unsigned long)(stSilenceBytes / 176), (unsigned long)stPasses, isPlaying ? 1 : 0);
+  // "out" is what the Bluetooth stack took; "fed" is what the SD side delivered.
+  // A stutter with out < ~170 KB/s is the link, with out healthy it is not.
+  Serial.printf("[I][audio] %s: out %lu KB/s (%lu calls/s), fed %lu KB/s, ring %d%%, starve %lu (%lu ms silence), state %d\n",
+                why, (unsigned long)audioOutKBps(),
+                (unsigned long)(stOutCalls * 1000UL / (dt ? dt : 1)),
+                (unsigned long)fedKbps, fill,
+                (unsigned long)stStarve, (unsigned long)(stSilenceBytes / 176),
+                (int)a2dp_source.get_audio_state());
   stLastLog = now;
   stLastLogBytes = fed;
+  stOutBytes = 0;
+  stOutCalls = 0;
+  stWindowStart = now;
 }
 
 void audioLogStatsIfDue() {
   if (!btInitialized || !isPlaying) return;
-  if (millis() - stLastLog < AUDIO_LOG_PERIOD_MS) return;
-  audioLogStats("5s");
+  unsigned long since = millis() - stLastLog;
+  // Quiet by default (every 30 s) - the serial monitor should not be a firehose
+  // for a healthy stream - but speak up quickly while the link is behind, which
+  // is exactly when the log is worth reading.
+  if (audioLinkBehind()) {
+    if (since < 5000) return;
+    audioLogStats("link behind");
+    return;
+  }
+  if (since < AUDIO_LOG_PERIOD_MS) return;
+  audioLogStats("30s");
 }
 
 // ==========================================
@@ -159,6 +203,8 @@ int32_t get_audio_data(Frame* channels, int32_t frame_count) {
       stSilenceBytes += (uint32_t)(bytesNeeded - n);
       audioNoteStarve(n, bytesNeeded);
     }
+    stOutBytes += (uint32_t)bytesNeeded;
+    stOutCalls++;
     int g = audioGainQ8;
     if (g != 256) {
       int16_t* s = (int16_t*)channels;
@@ -169,6 +215,8 @@ int32_t get_audio_data(Frame* channels, int32_t frame_count) {
   memset(channels, 0, bytesNeeded);
   stSilenceBytes += (uint32_t)bytesNeeded;
   audioNoteStarve(0, bytesNeeded);
+  stOutBytes += (uint32_t)bytesNeeded;
+  stOutCalls++;
   return frame_count;
 }
 
