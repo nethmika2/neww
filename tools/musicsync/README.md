@@ -40,8 +40,16 @@ Other ways to use it:
 YouTube changes often. Double-click **Update-ytdlp.bat**.
 
 **"The page needs to be reloaded"**: you're missing Deno (run Setup.bat, then open a *new*
-window) or yt-dlp is out of date. Don't add a `cookies.txt`. A logged-in session currently
-makes this error more likely, and the tool works without one.
+window) or yt-dlp is out of date.
+
+**"Sign in to confirm you're not a bot"**: YouTube's bot check on your connection. The tool
+asks which browser you're signed in to YouTube with, remembers it, and retries. Use **Firefox**:
+1. Sign in to YouTube in Firefox (a spare Google account is wise; automated use can get an account flagged).
+2. Close Firefox, then run `CYD Music.bat` again (or `python cydmusic.py --browser firefox` once).
+
+Chrome and Edge usually fail: they lock and encrypt their cookies in a way yt-dlp can't read.
+Don't use an exported `cookies.txt`. It goes stale quickly, which was what caused
+"The page needs to be reloaded". `--browser none` turns the browser login off again.
 
 ## Notes
 - Only download music you have the right to use.
