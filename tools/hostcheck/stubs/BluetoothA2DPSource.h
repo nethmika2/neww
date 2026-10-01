@@ -116,6 +116,17 @@ class BluetoothA2DPSource : public BluetoothA2DPCommon {
   void set_stream_reader(int32_t (*cb)(Frame *, int32_t)) { (void)cb; }
   void set_stream_reader(void *r) { (void)r; }
   void set_reconnect(bool v) { (void)v; }
-  void set_auto_reconnect(bool v) { (void)v; }
+  // Records what the firmware asked for, so the tests can check that it asks for
+  // the remembered earbuds (and not for a scan) when it has them.
+  void set_auto_reconnect(bool v, int tries = 1000) { autoReconnect = v; reconnectTries = tries; reconnectAddrSet = false; }
+  void set_auto_reconnect(esp_bd_addr_t addr, int tries = 3) {
+    autoReconnect = true; reconnectTries = tries; reconnectAddrSet = true;
+    memcpy(lastPeer, addr, 6); memcpy(reconnectAddr, addr, 6);
+  }
+  esp_bd_addr_t *get_last_peer_address() { return &lastPeer; }
+  // Like the real end(): the library forgets the peer it held.
+  void end() { BluetoothA2DPCommon::end(); memset(lastPeer, 0, 6); }
+  bool autoReconnect = false; int reconnectTries = 0; bool reconnectAddrSet = false;
+  esp_bd_addr_t reconnectAddr = {0}; esp_bd_addr_t lastPeer = {0};
   void set_ssid(bool v) { (void)v; }
 };

@@ -2191,6 +2191,72 @@ static void testRendering() {
   textKbNumeric = false;
 }
 
+// ===========================================================================
+// Earbud auto-reconnect: the earbuds must not need pairing mode after the first
+// connection.  That means the firmware turns the library's auto-reconnect on
+// (it is off by default) and hands it the remembered address on every start -
+// including after a session rebuild, because the library's end() forgets it.
+// ===========================================================================
+static void testEarbudReconnect() {
+  SUITE("earbud reconnect");
+  Preferences::resetAll();
+  uint8_t out[6];
+  CHECK(!btSavedPeer(out));
+
+  // Fresh device: nothing saved, so the first connection is a scan, but with
+  // auto-reconnect on (that is what makes the library store the address).
+  a2dp_source.startCount = 0;
+  a2dp_source.autoReconnect = false;
+  btStartSource();
+  CHECK_EQ(a2dp_source.startCount, 1);
+  CHECK(a2dp_source.autoReconnect);
+  CHECK(!a2dp_source.reconnectAddrSet);
+  CHECK_EQ(a2dp_source.reconnectTries, (int)BT_RECONNECT_TRIES);
+
+  // The link comes up with the earbuds connected: the address is saved.
+  const uint8_t earbuds[6] = {0xE8, 0xEE, 0xCC, 0x12, 0x34, 0x56};
+  memcpy(a2dp_source.lastPeer, earbuds, 6);
+  btRememberPeer();
+  CHECK(btSavedPeer(out));
+  CHECK(!memcmp(out, earbuds, 6));
+
+  // A session rebuild: end() wipes the library's copy; start must restore it.
+  a2dp_source.end();
+  CHECK(a2dp_source.lastPeer[0] == 0);
+  a2dp_source.reconnectAddrSet = false;
+  btStartSource();
+  CHECK(a2dp_source.reconnectAddrSet);
+  CHECK(!memcmp(a2dp_source.reconnectAddr, earbuds, 6));
+  CHECK_EQ(a2dp_source.reconnectTries, (int)BT_RECONNECT_TRIES);
+
+  // An empty address (library cleared) must never overwrite the saved one.
+  memset(a2dp_source.lastPeer, 0, 6);
+  btRememberPeer();
+  CHECK(btSavedPeer(out));
+  CHECK(!memcmp(out, earbuds, 6));
+
+  // Different earbuds replace the old ones.
+  const uint8_t other[6] = {1, 2, 3, 4, 5, 6};
+  memcpy(a2dp_source.lastPeer, other, 6);
+  btRememberPeer();
+  CHECK(btSavedPeer(out));
+  CHECK(!memcmp(out, other, 6));
+
+  // Forgetting goes back to scanning.
+  btForgetPeer();
+  CHECK(!btSavedPeer(out));
+  a2dp_source.reconnectAddrSet = true;
+  btStartSource();
+  CHECK(!a2dp_source.reconnectAddrSet);
+  CHECK(a2dp_source.autoReconnect);
+
+  // A garbage value of the wrong size is treated as nothing saved.
+  prefs.putBytes("btpeer", "abc", 3);
+  CHECK(!btSavedPeer(out));
+  Preferences::resetAll();
+  memset(a2dp_source.lastPeer, 0, 6);
+}
+
 int main() {
   system("mkdir -p shots");
   printf("== host checks ==\n");
@@ -2208,6 +2274,7 @@ int main() {
   testRingSizing();
   testPostConnectReserve();
   testLinkRecovery();
+  testEarbudReconnect();
   testAudioOutTelemetry();
   testLazyRing();
   testMusicStart();

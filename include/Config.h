@@ -62,7 +62,7 @@
 
 // Wi-Fi & NTP Configuration
 // Printed on every boot so a serial log says which build is on the device.
-static const char* const FW_BUILD = "2026-10-02c (direct SD audio path)";
+static const char* const FW_BUILD = "2026-10-02d (earbud auto-reconnect)";
 
 static const char* const WIFI_SSID = "Dialog 4G New";
 static const char* const WIFI_PASS = "tgrd-0241320-";
@@ -193,3 +193,8 @@ static const int MAX_DAILY_GOAL = 16;
 #define POMO_HISTORY_DAYS 90
 #define POMO_NAME_LEN 22
 static const char* const EARBUD_NAME = "soundcore R50i NC";
+// How many times the stack pages the remembered earbuds before it gives up and
+// falls back to scanning for them (which only finds earbuds in pairing mode).
+// A try is roughly 10 s, so this keeps looking for a few minutes - long enough
+// to open the Music app first and take the earbuds out of the case afterwards.
+#define BT_RECONNECT_TRIES 20

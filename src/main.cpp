@@ -130,6 +130,7 @@ void loop() {
       if (btConnected) {
         Serial.printf("[I][bt] link up at %lu ms (free heap %u)\n",
                       millis(), (unsigned)ESP.getFreeHeap());
+        btRememberPeer();   // so the next start pages these earbuds instead of scanning
       } else {
         Serial.printf("[I][bt] link down at %lu ms (free heap %u)\n",
                       millis(), (unsigned)ESP.getFreeHeap());

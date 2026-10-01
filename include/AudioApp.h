@@ -43,7 +43,16 @@ int audioStateNow();           // last A2DP audio state the stack reported (-1 =
 void audioStateCallback(esp_a2d_audio_state_t state, void*);   // register before start()
 void audioLinkVerdictClear();      // forget the accumulated "behind" time
 bool audioLinkRecoveryService();   // restarts a throttled stream (see the .cpp)
-int audioLinkRebuildCount();       // full session rebuilds since boot
+int audioLinkRebuildCount();
+
+// Earbud (re)connection.  btStartSource() is the one place a2dp_source.start() is
+// called from: it switches auto-reconnect on and hands the library the remembered
+// earbud address, so the earbuds connect without being put in pairing mode.
+// btRememberPeer() stores the address once a link is up.
+void btStartSource();
+void btRememberPeer();
+bool btSavedPeer(uint8_t out[6]);
+void btForgetPeer();       // full session rebuilds since boot
 void audioStatsReset();
 void audioLogStats(const char* why);
 void audioLogStatsIfDue();

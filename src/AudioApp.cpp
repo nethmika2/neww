@@ -21,6 +21,64 @@ int getRingBufferAvailableRead() {
   return audioRingBytes - (tail - head);
 }
 
+
+// ==========================================
+// EARBUD AUTO-RECONNECT
+// ==========================================
+// Why the earbuds used to need pairing mode: the A2DP library starts with
+// auto-reconnect OFF (whatever its header comment says), so every start() went
+// straight to scanning for the earbuds by name.  A scan only finds a device that
+// is discoverable, i.e. in pairing mode.  It did not even save the address of the
+// earbuds it had connected to, and its end() wipes the address it holds, which a
+// session rebuild calls.  So the address is kept here, in our own preferences.
+//
+// With the address known the stack *pages* the earbuds directly.  That needs
+// no pairing mode, only the link key from the first pairing, which Bluedroid
+// keeps in flash.
+static const char* const BT_PEER_KEY = "btpeer";
+
+bool btSavedPeer(uint8_t out[6]) {
+  if (prefs.getBytesLength(BT_PEER_KEY) != 6) return false;
+  if (prefs.getBytes(BT_PEER_KEY, out, 6) != 6) return false;
+  for (int i = 0; i < 6; i++) if (out[i]) return true;
+  return false;                       // all zero is "none", not an address
+}
+
+void btForgetPeer() { prefs.remove(BT_PEER_KEY); }
+
+void btStartSource() {
+  uint8_t addr[6];
+  if (btSavedPeer(addr)) {
+    // Page the remembered earbuds first; fall back to scanning only after
+    // BT_RECONNECT_TRIES attempts.
+    a2dp_source.set_auto_reconnect(addr, BT_RECONNECT_TRIES);
+    Serial.printf("[I][bt] reconnecting to saved earbuds %02X:%02X:%02X:%02X:%02X:%02X\n",
+                  addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+  } else {
+    // Nothing saved yet: the first connection is made by scanning (earbuds in
+    // pairing mode), then btRememberPeer() stores the address.
+    a2dp_source.set_auto_reconnect(true, BT_RECONNECT_TRIES);
+    Serial.printf("[I][bt] no saved earbuds, scanning for \"%s\" (use pairing mode once)\n", EARBUD_NAME);
+  }
+  a2dp_source.start(EARBUD_NAME, get_audio_data);
+}
+
+// Called when the link comes up.  The library records the peer it connected to;
+// copy it into our preferences if it is new.
+void btRememberPeer() {
+  esp_bd_addr_t* peer = a2dp_source.get_last_peer_address();
+  if (!peer) return;
+  uint8_t cur[6];
+  bool zero = true;
+  for (int i = 0; i < 6; i++) { cur[i] = (*peer)[i]; if (cur[i]) zero = false; }
+  if (zero) return;
+  uint8_t saved[6];
+  if (btSavedPeer(saved) && memcmp(saved, cur, 6) == 0) return;
+  prefs.putBytes(BT_PEER_KEY, cur, 6);
+  Serial.printf("[I][bt] saved earbuds %02X:%02X:%02X:%02X:%02X:%02X for automatic reconnect\n",
+                cur[0], cur[1], cur[2], cur[3], cur[4], cur[5]);
+}
+
 // ==========================================
 // TELEMETRY
 // ==========================================
@@ -897,7 +955,7 @@ bool audioLinkRecoveryService() {
                 linkRebuilds, LINK_MAX_REBUILDS);
   a2dp_source.end();
   delay(300);
-  a2dp_source.start(EARBUD_NAME, get_audio_data);
+  btStartSource();                 // end() forgot the earbuds; hand them back
   delay(1200);
   a2dp_source.set_volume(127);
   esp_bt_sleep_disable();
