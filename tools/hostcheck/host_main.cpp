@@ -1324,9 +1324,14 @@ static void testMusicStart() {
   btInitialized = false;
   audioSystemReady = false;
   a2dp_source.set_connected(false);
+  // The stack reports SUSPEND until the sink starts the stream; with a leftover
+  // STARTED state the ring service would take the ring before connecting, which
+  // is exactly what this suite must catch.
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);
   hostSetMillis(0);
   hostSetMillisStep(250);   // the touch handler waits for a release
   hostSetFreeHeap(BT_MIN_HEAP + 40000);
+  audioRingServiceReset();
 
   SD.reset();
   hostMakeWav("/live.wav", 1);
@@ -1348,6 +1353,12 @@ static void testMusicStart() {
 
   CHECK_EQ(a2dp_source.startCount, 1);
   CHECK(btInitialized);
+  // ...with a state callback registered, so the stack actually reports states.
+  a2dp_source.hostPostAudioState(ESP_A2D_AUDIO_STATE_STARTED);
+  CHECK_EQ(audioStateNow(), (int)ESP_A2D_AUDIO_STATE_STARTED);
+  // Put the stub back: a real stack reports SUSPEND until the sink starts the
+  // stream, and the checks below are about that pre-stream window.
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);
   // Bluetooth modem sleep is switched off while streaming: Espressif documents
   // it as a cause of audio glitches.
   CHECK(hostBtSleepDisabled());
@@ -1406,6 +1417,72 @@ static void testMusicStart() {
 // from the data callback instead of the ~172 KB/s an A2DP source needs.  These
 // checks pin the counters that report it, so a future log says which side is
 // short: "out" (the stack is being throttled by the air) or "fed" (the SD side).
+// ===========================================================================
+// Stream state tracking + link recovery
+// ===========================================================================
+static void testLinkRecovery() {
+  SUITE("link recovery");
+  // The state reading must come from a callback the stack actually calls: the
+  // library's own copy stays at its default otherwise, which is what made the
+  // "state 0" in the hardware log meaningless.
+  audioStateCallback(ESP_A2D_AUDIO_STATE_STARTED, nullptr);
+  CHECK_EQ(audioStateNow(), (int)ESP_A2D_AUDIO_STATE_STARTED);
+  audioStateCallback(ESP_A2D_AUDIO_STATE_SUSPEND, nullptr);
+  CHECK_EQ(audioStateNow(), (int)ESP_A2D_AUDIO_STATE_SUSPEND);
+
+  // A throttled, playing link gets rebuilt once - not on every call.
+  audioRingBuffer = (uint8_t *)malloc(1024);
+  memset(audioRingBuffer, 0, 1024);
+  audioRingBytes = 1024;
+  audioSystemReady = true;
+  btInitialized = true;
+  isPlaying = true;
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_STARTED);
+  a2dp_source.endCount = 0;
+  a2dp_source.startCount = 0;
+  hostSetMillis(0);
+  hostSetMillisStep(0);
+  audioStatsReset();
+  audioLinkRecoveryReset();
+
+  Frame buf[128];
+  for (int i = 0; i < 4; i++) get_audio_data(buf, 128);   // 2 KB over the window
+  hostSetMillis(2500);                                    // 2 KB in 2.5 s: far behind
+  CHECK(audioLinkBehind());
+  CHECK(!audioLinkRecoveryService());                     // first sighting: noting it
+  hostSetMillis(2500 + LINK_BEHIND_MS + 1000);
+  CHECK(audioLinkRecoveryService());
+  CHECK_EQ(a2dp_source.endCount, 1);
+  CHECK_EQ(a2dp_source.startCount, 1);
+  // Immediately afterwards the gap has not elapsed: no second rebuild.
+  CHECK(!audioLinkRecoveryService());
+  CHECK_EQ(a2dp_source.endCount, 1);
+
+  // A link that is keeping up is never rebuilt.
+  hostSetMillis(300000);
+  audioStatsReset();
+  for (int i = 0; i < 344; i++) get_audio_data(buf, 128);   // real time
+  hostSetMillis(301000);
+  CHECK(!audioLinkBehind());
+  CHECK(!audioLinkRecoveryService());
+  CHECK_EQ(a2dp_source.endCount, 1);
+
+  // Not while paused either: nothing is being streamed, so nothing is behind.
+  isPlaying = false;
+  CHECK(!audioLinkRecoveryService());
+  CHECK_EQ(a2dp_source.endCount, 1);
+
+  free(audioRingBuffer);
+  audioRingBuffer = nullptr;
+  audioRingBytes = 0;
+  audioSystemReady = false;
+  btInitialized = false;
+  isPlaying = false;
+  audioStateCallback(ESP_A2D_AUDIO_STATE_SUSPEND, nullptr);
+  audioLinkRecoveryReset();
+  hostSetFreeHeap(200000);
+}
+
 static void testAudioOutTelemetry() {
   SUITE("audio out telemetry");
   // A ring with data in it, and the callback called the way the stack does it.
@@ -1490,8 +1567,9 @@ static void testLazyRing() {
   audioSystemReady = false;
   btInitialized = false;
   a2dp_source.set_connected(false);
-  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);
+  a2dp_source.hostSetAudioState(ESP_A2D_AUDIO_STATE_SUSPEND);   // as before connecting
   hostSetMillis(0);
+  audioRingServiceReset();
 
   // A track opened the way the music app does it: the file is ready, the ring is
   // the only thing missing.
@@ -1942,6 +2020,7 @@ int main() {
   testHttpDate();
   testRingSizing();
   testPostConnectReserve();
+  testLinkRecovery();
   testAudioOutTelemetry();
   testLazyRing();
   testMusicStart();

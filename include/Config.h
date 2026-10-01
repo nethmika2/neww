@@ -62,7 +62,7 @@
 
 // Wi-Fi & NTP Configuration
 // Printed on every boot so a serial log says which build is on the device.
-static const char* const FW_BUILD = "2026-10-01c (quiet serial, link telemetry)";
+static const char* const FW_BUILD = "2026-10-01d (true stream state, link recovery)";
 
 static const char* const WIFI_SSID = "Dialog 4G New";
 static const char* const WIFI_PASS = "tgrd-0241320-";
@@ -139,6 +139,11 @@ static const char* const NTP_3 = "pool.ntp.org";
 // A healthy A2DP source pulls 44100*4 (about 172 KB/s) from the data callback.
 // Below this the transmit queue is backed up - the air link, not the app.
 #define AUDIO_LINK_WARN_KBPS 130
+// How long the link may stay behind before the app rebuilds the stream, and how
+// often it may do so.  A rebuild costs a couple of seconds of silence, so it is
+// only worth it for a link that is not coming back on its own.
+#define LINK_BEHIND_MS 20000UL
+#define LINK_RESTART_GAP_MS 90000UL
 
 #define SCREEN_TIMEOUT_MS 60000UL
 #define SAVER_OFF_MS 600000UL

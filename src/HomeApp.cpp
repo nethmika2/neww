@@ -128,6 +128,9 @@ void handleHomeTouch(bool touched, int sx, int sy) {
       // the firmware before, which is why the buttons did nothing.)
       earbudControlsPrepare();
       delay(50);
+      // The library only tracks the A2DP audio state when a callback is
+      // registered; without one our "state N" readings were its unset default.
+      a2dp_source.set_on_audio_state_changed(audioStateCallback);
       a2dp_source.start(EARBUD_NAME, get_audio_data);
       delay(1200);
       // The Bluetooth controller may park itself between events (modem sleep);

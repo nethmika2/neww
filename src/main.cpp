@@ -126,15 +126,17 @@ void loop() {
 
   // Stream state changes are the other half of a stutter report: if the sink
   // suspends and restarts the stream, it shows up here; if the state stays
-  // STARTED while the audio drops out, the loss is in the air, not in the app.
+  // STARTED (2) while the audio drops out, the loss is in the air, not in the
+  // app.  This now reads a state that a callback actually maintains.
   if (btInitialized) {
-    static int lastStreamState = -1;
-    int streamState = (int)a2dp_source.get_audio_state();
+    static int lastStreamState = -2;
+    int streamState = audioStateNow();
     if (streamState != lastStreamState) {
       lastStreamState = streamState;
       Serial.printf("[I][bt] stream state %d at %lu ms\n", streamState, millis());
     }
   }
+  audioLinkRecoveryService();
   // Earbud buttons are queued from the Bluetooth task and applied here.
   earbudControlsPoll();
 

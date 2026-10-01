@@ -9,6 +9,8 @@ int getRingBufferAvailableWrite();
 int getRingBufferAvailableRead();
 int allocAudioRing(uint32_t reserveBytes, bool verbose);   // picks the ring size, 0 when none fits
 void audioRingService();       // allocates the ring once a connection has settled
+void audioRingServiceReset();      // back to power-on state (host tests)
+void audioLinkRecoveryReset();     // ditto for the recovery gate
 void audioFeederTask(void* pvParameters);
 int32_t get_audio_data(Frame* channels, int32_t frame_count);
 
@@ -28,6 +30,9 @@ uint32_t audioOutBytes();      // bytes handed to the Bluetooth stack
 uint32_t audioOutCalls();      // data callbacks served
 uint32_t audioOutKBps();       // the above per second, since the last report
 bool audioLinkBehind();        // the stack is pulling well under real time
+int audioStateNow();           // last A2DP audio state the stack reported (-1 = none)
+void audioStateCallback(esp_a2d_audio_state_t state, void*);   // register before start()
+bool audioLinkRecoveryService();   // rebuilds a throttled stream (see the .cpp)
 void audioStatsReset();
 void audioLogStats(const char* why);
 void audioLogStatsIfDue();

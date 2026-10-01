@@ -37,11 +37,18 @@ class BluetoothA2DPCommon {
     startAfterPassthru = (passthru != nullptr);
     return true;
   }
-  void end() { started_ = false; }
+  void end() { started_ = false; endCount++; }
   bool is_connected() { return connected_; }
   bool is_connected(int) { return connected_; }
   esp_a2d_audio_state_t get_audio_state() { return audioState_; }
   void hostSetAudioState(esp_a2d_audio_state_t st) { audioState_ = st; }
+  void set_on_audio_state_changed(void (*cb)(esp_a2d_audio_state_t, void*), void* = nullptr) { audioStateCb_ = cb; }
+  // Posts a state the way the stack does: through the registered callback.
+  void hostPostAudioState(esp_a2d_audio_state_t st) {
+    audioState_ = st;
+    if (audioStateCb_) audioStateCb_(st, nullptr);
+  }
+  int endCount = 0;
   void set_connected(bool c) { connected_ = c; }
   void set_volume(int v) { volume_ = v; }
   int get_volume() { return volume_; }
@@ -63,6 +70,7 @@ class BluetoothA2DPCommon {
   bool started_ = false;
   bool connected_ = false;
   esp_a2d_audio_state_t audioState_ = ESP_A2D_AUDIO_STATE_SUSPEND;
+  void (*audioStateCb_)(esp_a2d_audio_state_t, void*) = nullptr;
   bool passthruActiveFlag = false;
   void (*passthru)(uint8_t, bool) = nullptr;
   std::vector<esp_avrc_rn_event_ids_t> rnEvents;

@@ -1,4 +1,5 @@
 #include "AudioApp.h"
+#include <esp_bt.h>
 #include "Globals.h"
 #include "DisplayUtils.h"
 
@@ -46,6 +47,19 @@ uint32_t audioBytesFed() { return stBytesFed; }
 uint32_t audioStarveCount() { return stStarve; }
 uint32_t audioSilenceBytes() { return stSilenceBytes; }
 uint32_t audioFeederPasses() { return stPasses; }
+
+// ==========================================
+// AUDIO STATE (what the sink told the stack)
+// ==========================================
+// The library keeps its own copy of the A2DP audio state, but it only updates
+// that copy when a callback is registered - so until now our "state N" in the
+// log was the library's unset default and told us nothing.  This records it, and
+// it is set from the Bluetooth task, so it does nothing but store a byte.
+static volatile int stAudioState = -1;
+void audioStateCallback(esp_a2d_audio_state_t state, void*) {
+  stAudioState = (int)state;
+}
+int audioStateNow() { return stAudioState; }
 uint32_t audioOutBytes() { return stOutBytes; }
 uint32_t audioOutCalls() { return stOutCalls; }
 
@@ -305,11 +319,25 @@ void loadPlaylist() {
 // the stack the whole heap for the one moment it needs it.  Music before that
 // point is silence from get_audio_data(), which is harmless: nothing is pulling
 // audio until the stream is up.
+// State of the ring service.  File scope rather than function-local so the host
+// tests can put it back to its power-on values between suites.
+static bool ringSawConnected = false;
+static unsigned long ringConnectedAt = 0;
+static unsigned long ringNextTry = 0;
+static int ringAttempt = 0;
+
+void audioRingServiceReset() {
+  ringSawConnected = false;
+  ringConnectedAt = 0;
+  ringNextTry = 0;
+  ringAttempt = 0;
+}
+
 void audioRingService() {
-  static bool sawConnected = false;
-  static unsigned long connectedAt = 0;
-  static unsigned long nextTry = 0;
-  static int attempt = 0;
+  bool& sawConnected = ringSawConnected;
+  unsigned long& connectedAt = ringConnectedAt;
+  unsigned long& nextTry = ringNextTry;
+  int& attempt = ringAttempt;
   if (audioRingBuffer || !audioSystemReady || !btInitialized) return;
   if (!a2dp_source.is_connected()) return;
   if (!sawConnected) {
@@ -695,4 +723,53 @@ void handleMusicListTouch(bool touched, int sx, int sy) {
       return;
     }
   }
+}
+
+// ==========================================
+// LINK RECOVERY
+// ==========================================
+// The report from hardware is specific: the first stream of a session runs at
+// full rate (~172 KB/s out, 325 kbps of SBC) and later the same link only
+// delivers ~116 KB/s - the A2DP transmit queue backs up, the stack throttles
+// itself, and the earbuds starve in a cycle.  The bitpool that sets the air rate
+// is negotiated inside Bluedroid (from the sink's capabilities, capped at 53)
+// and no library call can lower it, so the one action left in firmware is to
+// rebuild the stream: a fresh stream is exactly the state the user reports as
+// good.  Gated hard - only while actually playing, only after the link has been
+// behind for LINK_BEHIND_MS, and at most once per LINK_RESTART_GAP_MS.
+static unsigned long linkBehindSince = 0;
+static unsigned long linkLastRestart = 0;
+
+void audioLinkRecoveryReset() {
+  linkBehindSince = 0;
+  linkLastRestart = 0;
+}
+
+bool audioLinkRecoveryService() {
+  unsigned long& behindSince = linkBehindSince;
+  unsigned long& lastRestart = linkLastRestart;
+  if (!audioLinkBehind()) {
+    behindSince = 0;
+    return false;
+  }
+  unsigned long now = millis();
+  if (behindSince == 0) behindSince = now;
+  if (now - behindSince < LINK_BEHIND_MS) return false;
+  if (lastRestart != 0 && now - lastRestart < LINK_RESTART_GAP_MS) return false;
+
+  Serial.printf("[I][bt] link behind for %lu s (out %lu KB/s), rebuilding the stream\n",
+                (now - behindSince) / 1000, (unsigned long)audioOutKBps());
+  // Flush what is queued and start over; the library reconnects to the earbuds
+  // it was last paired with.
+  a2dp_source.end();
+  delay(300);
+  a2dp_source.start(EARBUD_NAME, get_audio_data);
+  delay(1200);
+  a2dp_source.set_volume(127);
+  esp_bt_sleep_disable();
+  audioStatsReset();
+  lastRestart = millis();
+  behindSince = lastRestart;
+  Serial.printf("[I][bt] stream restarted, free heap %u\n", (unsigned)ESP.getFreeHeap());
+  return true;
 }
