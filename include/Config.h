@@ -62,7 +62,7 @@
 
 // Wi-Fi & NTP Configuration
 // Printed on every boot so a serial log says which build is on the device.
-static const char* const FW_BUILD = "2026-10-02b (gentle stream restart)";
+static const char* const FW_BUILD = "2026-10-02c (direct SD audio path)";
 
 static const char* const WIFI_SSID = "Dialog 4G New";
 static const char* const WIFI_PASS = "tgrd-0241320-";
@@ -136,6 +136,11 @@ static const char* const NTP_3 = "pool.ntp.org";
 #define AUDIO_TEST_TONE 0
 // How often the [I][audio] telemetry line is printed while a track plays.
 #define AUDIO_LOG_PERIOD_MS 30000UL
+// The data path.  Direct SD reads from the audio callback are what the older,
+// working builds of this project did: no ring buffer, no feeder task, no extra
+// heap, and the card has plenty of throughput for 176 KB/s.  Set to 0 to use the
+// ring buffer path (kept, and still covered by the host tests).
+#define AUDIO_DIRECT_READ 1
 // A healthy A2DP source pulls 44100*4 (about 172 KB/s) from the data callback.
 // Below this the transmit queue is backed up - the air link, not the app.
 #define AUDIO_LINK_WARN_KBPS 130

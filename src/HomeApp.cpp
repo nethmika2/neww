@@ -120,6 +120,8 @@ void handleHomeTouch(bool touched, int sx, int sy) {
         playTrack(currentTrack);
         isPlaying = false;
       }
+      Serial.printf("[I][music] audio path: %s\n",
+                    audioSourceDirect() ? "direct SD reads" : "ring buffer");
       printCentered("Starting Bluetooth...", 160, 130, &FreeSans9pt7b, MUTED_COLOR);
       audioSystemReady = true;
       // Registers the AVRCP passthrough handler *before* the stack starts: the

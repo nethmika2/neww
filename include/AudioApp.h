@@ -7,6 +7,14 @@
 // Audio ring buffer & background task
 int getRingBufferAvailableWrite();
 int getRingBufferAvailableRead();
+// Data path selection: direct SD reads from the callback (default, matches the
+// older working builds) or the ring buffer + feeder task.
+void audioSetSourceDirect(bool direct);
+#ifdef HOSTCHECK
+void audioSetFileBusyForTest(bool busy);
+#endif
+bool audioSourceDirect();
+
 int allocAudioRing(uint32_t reserveBytes, bool verbose);   // picks the ring size, 0 when none fits
 void audioRingService();       // allocates the ring once a connection has settled
 void audioRingServiceReset();      // back to power-on state (host tests)

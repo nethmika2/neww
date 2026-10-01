@@ -462,6 +462,7 @@ static void testCalibration() {
 // earbud / AVRCP control
 // ===========================================================================
 static void testEarbuds() {
+  audioSetSourceDirect(false);   // ring path
   SUITE("earbuds");
   resetPomodoroState();
   hostAvrcReset();
@@ -1133,6 +1134,7 @@ static void testGraphZoom() {
 // the partial-block and the starved paths are all hit in a handful of KB
 // instead of the 24 KB a real card would need.
 static void testAudio() {
+  audioSetSourceDirect(false);   // ring path
   SUITE("audio");
   hostSetMillis(1000);
   hostSetMillisStep(0);
@@ -1317,6 +1319,7 @@ static time_t utcEpoch(int y, int mo, int d, int h, int mi, int s) {
 // brings up the target the buttons need), and no ring buffer is held yet (the
 // connection setup gets the whole heap).
 static void testMusicStart() {
+  audioSetSourceDirect(false);   // ring path
   SUITE("music start");
   audioRingBuffer = nullptr;
   audioRingBytes = 0;
@@ -1421,6 +1424,7 @@ static void testMusicStart() {
 // Stream state tracking + link recovery
 // ===========================================================================
 static void testLinkRecovery() {
+  audioSetSourceDirect(false);   // ring path
   SUITE("link recovery");
   // The state reading must come from a callback the stack actually calls: the
   // library's own copy stays at its default otherwise, which is what made the
@@ -1528,6 +1532,7 @@ static void testLinkRecovery() {
 }
 
 static void testAudioOutTelemetry() {
+  audioSetSourceDirect(false);   // ring path
   SUITE("audio out telemetry");
   // A ring with data in it, and the callback called the way the stack does it.
   audioRingBuffer = (uint8_t *)malloc(1024);
@@ -1586,6 +1591,7 @@ static void testAudioOutTelemetry() {
 }
 
 static void testLazyRing() {
+  audioSetSourceDirect(false);   // ring path
   SUITE("lazy ring");
   audioRingBuffer = nullptr;
   audioRingBytes = 0;
@@ -1669,6 +1675,7 @@ static void testLazyRing() {
 }
 
 static void testRingSizing() {
+  audioSetSourceDirect(false);   // ring path
   SUITE("ring sizing");
   audioRingBuffer = nullptr;
   audioRingBytes = 0;
@@ -1711,6 +1718,7 @@ static void testRingSizing() {
 // board (the stack owns most of the heap by then) and big enough to leave the
 // stream room.  This is the gate that left the user with silence.
 static void testPostConnectReserve() {
+  audioSetSourceDirect(false);   // ring path
   SUITE("post-connect reserve");
   audioRingBuffer = nullptr;
   audioRingBytes = 0;
@@ -1736,6 +1744,124 @@ static void testPostConnectReserve() {
   hostSetFreeHeap(43860);
   CHECK_EQ(allocAudioRing(BT_MIN_HEAP, true), 0);
   hostSetFreeHeap(200000);
+}
+
+// ===========================================================================
+// Direct SD audio path (what the older, working builds did)
+// ===========================================================================
+// The audio callback reads the file itself: no ring, no feeder task, no extra
+// heap.  These checks pin the behaviour that matters - the bytes handed to the
+// stack are the file's own bytes, a short read ends the track once, the gain
+// applies, and the callback never touches a file the main loop is swapping.
+static void testDirectAudio() {
+  SUITE("direct audio");
+  audioSetSourceDirect(true);
+  CHECK(audioSourceDirect());
+  bool wasReady = audioSystemReady;
+  bool wasBt = btInitialized;
+
+  SD.reset();
+  hostMakeWav("/direct.wav", 1);              // 1 s of 440 Hz stereo @ 44.1 kHz
+  sdReady = true;
+  numTracks = 1;
+  playlist[0] = "direct.wav";
+  audioSystemReady = true;
+  btInitialized = true;
+  currentVolume = 100;                        // gain 256: bytes pass through
+  applyVolume();
+  playTrack(0);
+  CHECK(audioFile);
+  CHECK(isPlaying);
+  CHECK_EQ(audioStreamPos, (uint32_t)0);
+
+  // Read a chunk the way the stack does and compare it with the file.
+  const int FRAMES = 128;                     // 512 bytes
+  Frame buf[FRAMES];
+  memset(buf, 0, sizeof(buf));
+  CHECK_EQ(get_audio_data(buf, FRAMES), FRAMES);
+  CHECK_EQ(audioStreamPos, (uint32_t)(FRAMES * 4));
+
+  File f = SD.open("/direct.wav");
+  WavInfo info = parseWavHeader(f);
+  uint8_t expect[FRAMES * 4];
+  CHECK(f.seek(info.dataStart));
+  CHECK_EQ(f.read(expect, sizeof(expect)), (size_t)sizeof(expect));
+  f.close();
+  CHECK(memcmp(buf, expect, sizeof(expect)) == 0);   // byte for byte
+
+  // The stream continues where it left off: the next chunk is the file's next
+  // bytes, not the first ones again.
+  File f2 = SD.open("/direct.wav");
+  parseWavHeader(f2);
+  f2.seek(info.dataStart + FRAMES * 4);
+  CHECK_EQ(f2.read(expect, sizeof(expect)), (size_t)sizeof(expect));
+  f2.close();
+  memset(buf, 0, sizeof(buf));
+  get_audio_data(buf, FRAMES);
+  CHECK(memcmp(buf, expect, sizeof(expect)) == 0);
+
+  // The gain is applied on the bytes actually read.  Rewind first, so the same
+  // file bytes are compared.
+  playTrack(0);
+  currentVolume = 50;                         // Q8 gain 128
+  applyVolume();
+  memset(buf, 0, sizeof(buf));
+  get_audio_data(buf, FRAMES);
+  File f3 = SD.open("/direct.wav");
+  parseWavHeader(f3);
+  f3.seek(info.dataStart);
+  CHECK_EQ(f3.read(expect, sizeof(expect)), (size_t)sizeof(expect));
+  f3.close();
+  int16_t *s = (int16_t *)buf;
+  for (int i = 0; i < 8; i++) {
+    int16_t want = (int16_t)(((int16_t *)expect)[i] * 128 >> 8);
+    CHECK_EQ(s[i], want);
+  }
+  currentVolume = 100;
+  applyVolume();
+
+  // No file open: silence, and the caller still gets a full buffer back.
+  File saved = audioFile;
+  audioFile = File();
+  memset(buf, 1, sizeof(buf));
+  CHECK_EQ(get_audio_data(buf, FRAMES), FRAMES);
+  for (int i = 0; i < FRAMES; i++) CHECK_EQ(buf[i].channel1, (int16_t)0);
+  audioFile = saved;
+
+  // While the main loop swaps the file the callback must not touch it: silence
+  // for that instant, never a read from a half-closed handle.
+  audioSetFileBusyForTest(true);
+  memset(buf, 1, sizeof(buf));
+  uint32_t posBefore = audioStreamPos;
+  CHECK_EQ(get_audio_data(buf, FRAMES), FRAMES);
+  CHECK_EQ(audioStreamPos, posBefore);
+  for (int i = 0; i < FRAMES; i++) CHECK_EQ(buf[i].channel1, (int16_t)0);
+  audioSetFileBusyForTest(false);
+
+  // Drain the rest of the file: the short read at the end zero-fills and asks
+  // the main loop to advance exactly once.
+  trackFinished = false;
+  fileReadDone = false;
+  int guard = 0;
+  while (!trackFinished && guard++ < 100000) get_audio_data(buf, FRAMES);
+  CHECK(trackFinished);
+  CHECK(fileReadDone);
+  trackFinished = false;
+  memset(buf, 1, sizeof(buf));
+  get_audio_data(buf, FRAMES);                // past the end: silence, still full
+  for (int i = 0; i < FRAMES; i++) CHECK_EQ(buf[i].channel1, (int16_t)0);
+
+  // Reopening resets the end-of-file flags for the next track.
+  playTrack(0);
+  CHECK(!fileReadDone);
+  CHECK(isPlaying);
+
+  audioFile.close();
+  audioFile = File();
+  isPlaying = false;
+  audioSystemReady = wasReady;
+  btInitialized = wasBt;
+  audioSetSourceDirect(false);
 }
 
 static void testHttpDate() {
@@ -2077,6 +2203,7 @@ int main() {
   testLed();
   testGraphZoom();
   testAudio();
+  testDirectAudio();
   testHttpDate();
   testRingSizing();
   testPostConnectReserve();

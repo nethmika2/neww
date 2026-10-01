@@ -28,6 +28,19 @@ int getRingBufferAvailableRead() {
 // side (fed KB/s well under 176), from the Bluetooth side (starve count rising
 // while the feed rate is fine) or from nowhere (both healthy - then the stutter
 // is on the earbud side).
+// Data path in use.  Direct reads are the older, working design: the audio
+// callback reads the SD file itself.  The ring path stays for comparison and is
+// still exercised by the host tests.
+static bool audioDirect = (AUDIO_DIRECT_READ != 0);
+
+void audioSetSourceDirect(bool direct) { audioDirect = direct; }
+bool audioSourceDirect() { return audioDirect; }
+
+// Set while the main loop reopens or seeks the file: the callback must not touch
+// a File that is being closed underneath it.  (The older builds relied on luck
+// here; a flag costs nothing.)
+static volatile bool audioFileBusy = false;
+
 static volatile uint32_t stBytesFed = 0;
 // What the Bluetooth stack pulled from us.  The A2DP source asks for 44100*4
 // bytes a second while the link is healthy, so this is the figure that says
@@ -249,6 +262,38 @@ void audioFeederTask(void* pvParameters) {
 int32_t get_audio_data(Frame* channels, int32_t frame_count) {
   int bytesNeeded = frame_count * sizeof(Frame);
   if (!channels || frame_count <= 0) return frame_count;
+
+  if (audioDirect) {
+    // Read the file right here, the way the working builds did.  Nothing sits
+    // between the card and the radio: no ring to keep full, no feeder task
+    // competing for the CPU and no extra heap held while the stack connects.
+    if (!audioSystemReady || audioFileBusy || !audioFile || !isPlaying) {
+      memset(channels, 0, bytesNeeded);
+      return frame_count;
+    }
+    int got = audioFile.read((uint8_t*)channels, bytesNeeded);
+    if (got < 0) got = 0;
+    if (got < bytesNeeded) {
+      memset(((uint8_t*)channels) + got, 0, bytesNeeded - got);
+      // Once per file: the main loop advances to the next track.
+      if (!fileReadDone) {
+        fileReadDone = true;
+        trackFinished = true;
+      }
+    }
+    int g = audioGainQ8;
+    if (g != 256 && got > 0) {
+      int16_t* smp = (int16_t*)channels;
+      int n = got / 2;
+      for (int i = 0; i < n; i++) smp[i] = (int16_t)((smp[i] * g) >> 8);
+    }
+    audioStreamPos += got;
+    stBytesFed += got;
+    stOutBytes += (uint32_t)bytesNeeded;
+    stOutCalls++;
+    return frame_count;
+  }
+
   if (!audioSystemReady || !audioRingBuffer || audioRingBytes <= 0) {
     memset(channels, 0, bytesNeeded);
     return frame_count;
@@ -391,6 +436,7 @@ void audioRingService() {
   unsigned long& connectedAt = ringConnectedAt;
   unsigned long& nextTry = ringNextTry;
   int& attempt = ringAttempt;
+  if (audioDirect) return;   // nothing to allocate: the callback reads the card
   if (audioRingBuffer || !audioSystemReady || !btInitialized) return;
   if (!a2dp_source.is_connected()) return;
   if (!sawConnected) {
@@ -451,16 +497,19 @@ void playTrack(int index) {
   for (int attempts = 0; attempts < numTracks; attempts++) {
     int idx = (index + attempts) % numTracks;
     isPlaying = false;
+    audioFileBusy = true;      // the callback hands out silence meanwhile
     if (xSemaphoreTake(audioMutex, portMAX_DELAY) == pdTRUE) {
       if (audioFile) audioFile.close();
       File f = SD.open(("/" + playlist[idx]).c_str());
       if (!f) {
+        audioFileBusy = false;
         xSemaphoreGive(audioMutex);
         continue;
       }
       WavInfo info = parseWavHeader(f);
       if (!info.valid || info.numChannels != 2 || info.bitsPerSample != 16) {
         f.close();
+        audioFileBusy = false;
         xSemaphoreGive(audioMutex);
         continue;
       }
@@ -472,9 +521,10 @@ void playTrack(int index) {
       ringTail = 0;
       audioStreamPos = 0;
       fileReadDone = false;
-      isPlaying = true;
       audioStatsReset();
+      isPlaying = true;
       xSemaphoreGive(audioMutex);
+      audioFileBusy = false;
       Serial.printf("[I][audio] playing %s (%lu bytes, %lu Hz)\n", playlist[idx].c_str(),
                     (unsigned long)info.dataSize, (unsigned long)info.sampleRate);
     }
@@ -633,12 +683,14 @@ void handleMusicTouch(bool touched, int sx, int sy) {
     if (xSemaphoreTake(audioMutex, portMAX_DELAY) == pdTRUE) {
       bool wasPlaying = isPlaying;
       isPlaying = false;
+      audioFileBusy = true;
       ringHead = 0;
       ringTail = 0;
       audioFile.seek(currentWav.dataStart + target_byte);
       audioStreamPos = target_byte;
       fileReadDone = false;
       isPlaying = wasPlaying;
+      audioFileBusy = false;
       xSemaphoreGive(audioMutex);
     }
     drawMusicScreen(false);
@@ -854,3 +906,7 @@ bool audioLinkRecoveryService() {
   Serial.printf("[I][bt] session rebuilt, free heap %u\n", (unsigned)ESP.getFreeHeap());
   return true;
 }
+
+#ifdef HOSTCHECK
+void audioSetFileBusyForTest(bool busy) { audioFileBusy = busy; }
+#endif
